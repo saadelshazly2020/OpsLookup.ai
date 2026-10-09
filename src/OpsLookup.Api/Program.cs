@@ -30,6 +30,7 @@ builder.Services.AddDbContext<ContractDbContext>(options =>
         sql => sql.EnableRetryOnFailure()));
 
 builder.Services.AddScoped<IContractRepository, ContractRepository>();
+builder.Services.AddScoped<IAttorneyRepository, AttorneyRepository>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -87,6 +88,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
     .AllowAnonymous();
 
 app.MapContractEndpoints();
+app.MapAttorneyEndpoints();
 
 if (app.Environment.IsDevelopment())
 {

@@ -21,6 +21,7 @@ from config import Settings, load_settings
 from graph.build import build_graph
 from llm import build_llm
 from tools.api_client import LookupApiClient
+from tools.attorneys import build_attorney_tools
 from tools.contracts import build_tools
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -42,7 +43,7 @@ async def lifespan(app: FastAPI):
         operator_id=settings.operator_id,
         timeout_seconds=settings.request_timeout_seconds,
     )
-    tools = build_tools(client)
+    tools = build_tools(client) + build_attorney_tools(client)
     llm = build_llm(settings, tools)
 
     async with AsyncSqliteSaver.from_conn_string(settings.checkpoint_path) as checkpointer:

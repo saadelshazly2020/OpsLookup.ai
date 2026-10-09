@@ -7,6 +7,7 @@ so the loop can be verified without a LongCat key. Checks that:
   2. The tool result comes back from the API and reaches the next `llm` node
   3. A plain-text reply routes to `end`
   4. Thread state survives across separate invocations on one thread_id
+  5. The attorney tool resolves by social ID and by party name, and reports status
 
 Run:  python smoke_test.py
 Needs the .NET API listening on API_BASE_URL and API_TOKEN set in .env
@@ -24,16 +25,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END
 
 from tools.api_client import LookupApiClient
+from tools.attorneys import build_attorney_tools
 from tools.contracts import build_tools
 
 load_dotenv()
 
 
-class StubLlm:
-    """Emits one tool call, then a text answer once it has seen the result."""
+class StubToolLlm:
+    """Emits one tool call with fixed args, then a text answer once it has
+    seen the result. Parameterised by tool name and args so the same stub can
+    drive any tool without the model being real."""
 
-    def __init__(self, social_id: int) -> None:
-        self.social_id = social_id
+    def __init__(self, tool_name: str, args: dict) -> None:
+        self.tool_name = tool_name
+        self.args = args
 
     async def ainvoke(self, messages):
         saw_tool_result = any(isinstance(m, ToolMessage) for m in messages)
@@ -42,8 +47,8 @@ class StubLlm:
                 content="",
                 tool_calls=[
                     {
-                        "name": "get_contract",
-                        "args": {"social_id": self.social_id},
+                        "name": self.tool_name,
+                        "args": self.args,
                         "id": "call_1",
                     }
                 ],
@@ -54,6 +59,13 @@ class StubLlm:
             if isinstance(m, ToolMessage) and m.tool_call_id == "call_1"
         )
         return AIMessage(content=f"Tool returned {len(results)} chars")
+
+
+class StubLlm(StubToolLlm):
+    """Backwards-compatible contract lookup stub."""
+
+    def __init__(self, social_id: int) -> None:
+        super().__init__("get_contract", {"social_id": social_id})
 
 
 class StubAskingLlm:
@@ -92,6 +104,8 @@ async def main() -> int:
         return 1
 
     tools = build_tools(client)
+    attorney_tools = build_attorney_tools(client)
+    all_tools = tools + attorney_tools
 
     # --- 1. full loop: tool call -> action -> llm -> end --------------------
     print("1. tool-calling turn")
@@ -138,6 +152,50 @@ async def main() -> int:
     calling = AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}])
     check("tool_calls -> action", route_after_llm({"messages": [calling]}) == "action")
     check("plain text -> end", route_after_llm({"messages": [AIMessage(content="hi")]}) == END)
+
+    # --- 5. attorney tool ----------------------------------------------------
+    print("5. attorney by social ID")
+
+    async def run_attorney_tool(tool_name: str, args: dict, thread: str) -> str:
+        graph_a = build_graph(
+            StubToolLlm(tool_name, args), all_tools, InMemorySaver()
+        )
+        out = await graph_a.ainvoke(
+            {"messages": [("user", "look up the attorney")]},
+            {"configurable": {"thread_id": thread}, "recursion_limit": 10},
+        )
+        return tool_content(out)
+
+    check("both tools are registered", [t.name for t in all_tools] == ["get_contract", "get_attorney"])
+
+    # B Karimi (1987654321) has an approved attorney; C Delacroix (2111111111)
+    # has one flagged as faked. Both come from DevSeeder.
+    approved = await run_attorney_tool("get_attorney", {"social_id": 1987654321}, "smoke-5a")
+    print(f"     approved: {approved[:200]}")
+    check("attorney returned a result", '"results"' in approved)
+    check("status came through", "approved" in approved)
+    check("party came with it", "Karimi" in approved)
+    check("not an error", '"error"' not in approved)
+
+    faked = await run_attorney_tool("get_attorney", {"social_id": 2111111111}, "smoke-5b")
+    print(f"     faked: {faked[:200]}")
+    check("flagged status is reported as-is", "faked" in faked)
+
+    print("6. attorney by party name")
+    by_name = await run_attorney_tool("get_attorney", {"party_name": "karimi"}, "smoke-6")
+    print(f"     by name: {by_name[:200]}")
+    check("partial name matched", "Lena Fischer" in by_name)
+
+    print("7. attorney with no attorney on file")
+    # A Nasser (1234567890) is deliberately seeded with no attorney.
+    none_found = await run_attorney_tool("get_attorney", {"social_id": 1234567890}, "smoke-7")
+    print(f"     no attorney: {none_found[:200]}")
+    check("empty result list, not an error", '"results": []' in none_found.replace('"results":[]', '"results": []'))
+
+    print("8. attorney tool rejects a bad social ID")
+    bad_id = await run_attorney_tool("get_attorney", {"social_id": 3456789012}, "smoke-8")
+    print(f"     bad id: {bad_id[:200]}")
+    check("reported as an error the model can explain", '"error"' in bad_id)
 
     await client.aclose()
     print("\nAll smoke tests passed.")

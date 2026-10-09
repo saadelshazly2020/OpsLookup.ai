@@ -29,9 +29,12 @@ Or the launcher, which preflights the environment and opens the browser:
 Fastest way to verify everything still works without a model:
 
 ```powershell
-.\.venv\Scripts\python.exe smoke_test.py     # headless
+.\.venv\Scripts\python.exe smoke_test.py     # headless, 20 assertions
 code "Check API.ipynb"                        # 23 checks, select the opslookup kernel
 ```
+
+The smoke test is the one that covers the attorney tool. The notebook has not been
+extended for it — it still exercises contracts only.
 
 ---
 
@@ -65,7 +68,7 @@ operations member
         │  plain language
         ▼
 ┌───────────────────────────┐
-│  OpsLookup.Graph (Python) │   LangGraph loop, one tool
+│  OpsLookup.Graph (Python) │   LangGraph loop, two tools
 │  static/index.html        │   chat page
 └───────────┬───────────────┘
             │  HTTP + bearer token
@@ -137,20 +140,26 @@ Implementation notes:
 
 ```
 Contract (Id PK, Name nvarchar(200), Code bigint, CreatedDate)
-Party    (Id PK, Name nvarchar(200), ContractId FK, SocialId bigint, CreatedDate)
+Party    (Id PK, Name nvarchar(200), ContractId FK, SocialId bigint,
+          AttorneyId FK NULL, CreatedDate)
+Attorney (Id PK, Name nvarchar(200), Status nvarchar(20), CreatedDate)
 ```
 
 | Decision | Reason |
 |---|---|
 | `SocialId` is `bigint`, safe | Social IDs are **10 digits starting with 1 or 2**, so a leading zero is impossible and nothing is lost. Had they been fixed-width with leading zeros, `bigint` would silently break every lookup. |
 | `HasIndex(SocialId)` | Every request filters on it. Without the index every ticket is a table scan on `Party`. |
+| `HasIndex(Party.Name)` | The attorney endpoint filters on party name. |
 | `HasIndex(Code).IsUnique()` | Contract code is the business identifier. |
 | `Party.Name` filter, **not** `Contract.Name` | The optional `name` query param was specified against the party. Getting this backwards is easy — the response returns both `partyName` and `contractName`. |
 | Cascade delete from Contract → Party | An orphan party row is meaningless. |
+| `Party.AttorneyId` is **nullable** | A party may have no attorney on file. A non-nullable FK would force every existing party to be backfilled with a fake attorney, and would let the schema imply a guarantee the data does not make. |
+| `SetNull` on Party → Attorney | Removing an attorney must not remove the parties they acted for. |
+| `Attorney.Status` is `nvarchar`, not an int enum | Readable in the database, and adding a value does not renumber existing rows. |
 | EF Core **code-first**, no stored procedures | Requested. The migration files **are** the schema history and must be committed. |
 | Seed in `DevSeeder`, not `HasData` | `HasData` bakes demo rows into migration history, where real data must never end up. Gated on `IsDevelopment()`. |
 
-### Validation rule
+### Validation rules
 
 `Security/SocialIdRule.cs` — `^[12]\d{9}$`.
 
@@ -159,14 +168,34 @@ result set. Without the check an operations member reads "no contracts found" as
 customer does not exist" — a **wrong answer** rather than a failed lookup. It returns
 400 with a plain message instead.
 
+`Security/AttorneyStatus.cs` — `approved` or `faked`.
+
+Enforced twice on purpose: validated in C# on the way in, **and** a `CK_Attorney_Status`
+check constraint in the database. C# alone stops nothing — a script, EF raw SQL, or
+someone in SSMS all bypass it. The constraint is the one that cannot be bypassed.
+
+### A note on the seed data
+
+`DevSeeder` seeds **only a completely empty database**. Adding a new seeded entity
+therefore does nothing until the dev database is dropped:
+
+```powershell
+dotnet ef database drop --force --project src\OpsLookup.Api\OpsLookup.Api.csproj
+```
+
+This is deliberate and it is the one sharp edge in the seeder. Seeded rows are demo
+data and are safe to discard, but silently not appearing is a confusing first
+experience. The limitation is documented on `DevSeeder` itself.
+
 ---
 
 ## 6. API and tool contract
 
 ```
-GET  /api/contracts?socialId={long}&name={string?}   -> 200 / 400 / 401
-POST /auth/dev-token                                 Development only
-GET  /health                                          anonymous
+GET  /api/contracts?socialId={long}&name={string?}      -> 200 / 400 / 401
+GET  /api/attorneys?socialId={long?}&partyName={string?} -> 200 / 400 / 401
+POST /auth/dev-token                                  Development only
+GET  /health                                            anonymous
 ```
 
 ```json
@@ -182,13 +211,48 @@ GET  /health                                          anonymous
 
 An empty array means no contracts matched. That is **not** an error.
 
-### The tool
+### Attorneys
+
+```json
+[
+  {
+    "attorneyId": 1,
+    "attorneyName": "Lena Fischer",
+    "status": "approved",
+    "partyId": 3,
+    "partyName": "B Karimi",
+    "socialId": 1987654321
+  }
+]
+```
+
+The response carries the **matched party**, not just the attorney. A member asking
+"is my attorney approved?" needs confirmation that the attorney found is the one
+attached to the party they asked about; returning `attorneyName` alone would let the
+answer be about the wrong person.
+
+`socialId` and `partyName` are both optional but **at least one is required**. With
+neither, the endpoint would return every attorney on file — a data dump, not a lookup.
+
+Parties with no attorney on file are excluded from the result, because there is no
+attorney to report. `[]` therefore means "that party has no attorney on file", which
+is a genuinely different answer from "the attorney is approved".
+
+The query is anchored on `Party`, not `Attorney`: both filters describe the party, and
+starting from `Attorney` would need a reverse navigation EF cannot express cleanly here.
+
+### The tools
 
 ```python
 get_contract(social_id: int, name: str | None = None) -> str
+get_attorney(social_id: int | None = None, party_name: str | None = None) -> str
 ```
 
 Typed parameters only. No SQL, no table name, no free-text filter expression. See §3.
+
+Both tools return `{"results": [...]}` or `{"error": "..."}` as JSON text. Returning
+errors as text rather than raising lets the model explain the failure to the member in
+plain language instead of the run blowing up.
 
 ### Swagger UI token flow
 
@@ -225,6 +289,11 @@ Every one of these failed silently or misleadingly. Worth remembering.
 | `Cannot insert explicit value for identity column` | Seeder supplied explicit keys; EF makes `Id` IDENTITY by convention | Let the DB generate; wire contracts by navigation property |
 | `CS1061: 'OpenApiDocument' does not contain a definition for 'Security'` | `Microsoft.OpenApi` 2.x only. net9 resolves 1.6.30 | Attach the requirement per-operation instead |
 | `CS0234: 'Microsoft' does not contain 'OpenApi'` | `Microsoft.AspNetCore.OpenApi` 10.x on net9 resolves no `Microsoft.OpenApi` at all | Use 9.0.20 across the board |
+| `/api/chat` returns 500 "The agent hit an unexpected error" for a *client* mistake | `ChatRequest` declares non-nullable `string TicketId`/`Message`, but ASP.NET does **not** enforce non-nullability. A body missing those fields deserialises to null, reaches the bridge, and throws | Validate in the endpoint and return **400**. A malformed request must not look like a server fault |
+| `ArgumentOutOfRangeException: Unsupported argument type for the Python bridge` | `ToPy`'s fall-through arm also caught `null`, so a null string produced a message about a *type* | Explicit `null =>` arm. The real cause is always upstream of the bridge — read it as "a required argument was null" |
+| `dotnet run` listens on 5036, Vite dev proxy targets 5100 | `start.ps1` passes `--urls http://localhost:5100`, but plain `dotnet run` uses `launchSettings.json`, which said 5036 | Set `applicationUrl` in `launchSettings.json` to 5100 so both paths agree |
+| `CS0021: Cannot apply indexing with [] to LocalView<Attorney>` | `db.Set<T>().Local` is a `LocalView<T>`, not a list | Hold the entity in a local variable and assign it by navigation; EF fills the FKs |
+| New seeded entity does not appear | `DevSeeder` seeds only a **completely empty** database | `dotnet ef database drop --force`. Deliberate, and documented on the seeder |
 
 ### LongCat
 
@@ -342,12 +411,20 @@ dotnet ef database update  --project src\OpsLookup.Api\OpsLookup.Api.csproj
 
 ## 12. Open items
 
-- [ ] `LONGCAT_API_KEY` rotated
+- [ ] **`LONGCAT_API_KEY` rotated.** It was pasted in plaintext in chat and also sat in
+      `src/OpsLookup.Graph/.env.example`, which is **committed**. The example file has
+      been scrubbed, but the key itself is still the exposed one — rotate it.
 - [x] Tool calling verified against the Zen gateway: `{"social_id": 1234567890}`,
       real rows returned, grounded reply
-- [ ] **Confirm `toolCalls == 1` in a `/chat` response through the web page.** The
-      graph path is verified; the page path is not yet exercised.
+- [x] `toolCalls == 1` confirmed in `/chat` responses, both for contracts and for
+      attorneys, including through the web page.
+- [x] Attorney endpoint and tool covered: approved status, `faked` status, lookup by
+      partial party name, the no-attorney case, and a rejected social ID. 20 assertions
+      in `smoke_test.py`.
+- [x] `CK_Attorney_Status` proven to reject a bad value via direct SQL, not just via C#.
 - [ ] Swap symmetric JWT for OIDC if a real identity provider exists
 - [ ] Confirm Swagger's **Execute** button by hand — it was verified for Authorize
       only, because headless automation cannot render Swagger UI's React body
-- [ ] Consider token expiry longer than 60 minutes for the service token
+- [ ] Consider token expiry longer than 60 minutes for the service token. Both Python
+      apps hard-fail with "The lookup API rejected the service token" when it lapses,
+      which is at least a loud failure rather than a silent empty answer.

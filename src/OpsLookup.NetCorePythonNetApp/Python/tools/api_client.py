@@ -81,6 +81,51 @@ class LookupApiClient:
         except httpx.HTTPError:
             return False
 
+    async def get_attorneys(
+        self,
+        social_id: int | None = None,
+        party_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET /api/attorneys, by social ID, party name, or both."""
+        if social_id is None and not party_name:
+            raise LookupApiError(
+                "Provide a social ID, a party name, or both."
+            )
+
+        params: dict[str, str] = {}
+        if social_id is not None:
+            params["socialId"] = str(social_id)
+        if party_name:
+            params["partyName"] = party_name
+
+        try:
+            response = await self._client.get("/api/attorneys", params=params)
+        except httpx.HTTPError as exc:
+            raise LookupApiError(f"Could not reach the lookup API: {exc}") from exc
+
+        if response.status_code == httpx.codes.UNAUTHORIZED:
+            raise LookupApiError(
+                "The lookup API rejected the service token. "
+                "Check API_TOKEN matches the API's Jwt:SigningKey."
+            )
+
+        if response.status_code == httpx.codes.BAD_REQUEST:
+            raise LookupApiError(_problem_detail(response))
+
+        if response.is_error:
+            raise LookupApiError(
+                f"The lookup API returned HTTP {response.status_code}."
+            )
+
+        rows: list[dict[str, Any]] = response.json()
+        logger.info(
+            "attorneys social_id=%s party_name=%r -> %d row(s)",
+            social_id,
+            party_name,
+            len(rows),
+        )
+        return rows
+
 
 def _problem_detail(response: httpx.Response) -> str:
     try:

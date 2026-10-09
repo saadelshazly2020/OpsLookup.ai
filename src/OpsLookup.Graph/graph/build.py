@@ -24,16 +24,20 @@ They are not technical. Describe what you found in plain language, not jargon,
 and keep answers short.
 
 How to work:
-- Use the get_contract tool whenever a member asks about a party's contracts.
+- Use get_contract when a member asks about a party's contracts.
+- Use get_attorney when a member asks who represents a party, or whether an
+  attorney is approved. It searches by social ID, party name, or both.
 - A social ID is {rule}. If a member has not given you one, or gave you
   something that does not match that rule, ask them for it plainly instead of
   calling the tool. Never guess or invent a social ID.
-- The tool returns an empty result when there are no matching contracts. Say so
-  directly; do not pad the answer with speculation.
-- If the tool returns an error, report what went wrong rather than retrying
+- An attorney status is {statuses}. Report the status exactly as the tool
+  returned it, and say plainly what it means: "approved" means cleared to act,
+  "faked" means flagged as fraudulent. Do not soften or reword the status.
+- An empty result means no attorney is on file for that party. Say that directly.
+- If a tool returns an error, report what went wrong rather than retrying
   repeatedly.
-- Report only what the tool returned. Do not add details it did not give you.
-""".format(rule="10 digits starting with 1 or 2")
+- Report only what the tools returned. Do not add details they did not give you.
+""".format(rule="10 digits starting with 1 or 2", statuses="approved or faked")
 
 
 class TicketState(MessagesState):

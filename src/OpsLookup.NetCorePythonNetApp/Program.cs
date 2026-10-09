@@ -40,6 +40,17 @@ app.MapPost("/api/chat", async (
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 
+    // A non-nullable string on the record does not make ASP.NET enforce it.
+    // Without this check a body that omits `ticketId` or `message` deserialises
+    // to null, reaches the bridge, and surfaces as a 500 "unexpected error" --
+    // telling the caller the server broke when in fact the request was malformed.
+    if (string.IsNullOrWhiteSpace(request.TicketId) || string.IsNullOrWhiteSpace(request.Message))
+    {
+        return Results.Json(
+            new { detail = "Both 'ticketId' and 'message' are required." },
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
     try
     {
         var outcome = await bridge.ChatAsync(

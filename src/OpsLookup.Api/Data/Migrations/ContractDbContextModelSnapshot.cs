@@ -22,6 +22,37 @@ namespace OpsLookup.Api.Data.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("OpsLookup.Api.Entities.Attorney", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name");
+
+                    b.ToTable("Attorney", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Attorney_Status", "[Status] IN ('approved', 'faked')");
+                        });
+                });
+
             modelBuilder.Entity("OpsLookup.Api.Entities.Contract", b =>
                 {
                     b.Property<long>("Id")
@@ -57,6 +88,9 @@ namespace OpsLookup.Api.Data.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
+                    b.Property<int?>("AttorneyId")
+                        .HasColumnType("int");
+
                     b.Property<long>("ContractId")
                         .HasColumnType("bigint");
 
@@ -73,7 +107,11 @@ namespace OpsLookup.Api.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AttorneyId");
+
                     b.HasIndex("ContractId");
+
+                    b.HasIndex("Name");
 
                     b.HasIndex("SocialId");
 
@@ -82,13 +120,25 @@ namespace OpsLookup.Api.Data.Migrations
 
             modelBuilder.Entity("OpsLookup.Api.Entities.Party", b =>
                 {
+                    b.HasOne("OpsLookup.Api.Entities.Attorney", "Attorney")
+                        .WithMany("Parties")
+                        .HasForeignKey("AttorneyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("OpsLookup.Api.Entities.Contract", "Contract")
                         .WithMany("Parties")
                         .HasForeignKey("ContractId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.Navigation("Attorney");
+
                     b.Navigation("Contract");
+                });
+
+            modelBuilder.Entity("OpsLookup.Api.Entities.Attorney", b =>
+                {
+                    b.Navigation("Parties");
                 });
 
             modelBuilder.Entity("OpsLookup.Api.Entities.Contract", b =>

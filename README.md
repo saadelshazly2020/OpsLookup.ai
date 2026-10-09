@@ -40,10 +40,16 @@ both are plain text with no tool call, and both flow to `end`.
 
 `Contract (Id PK, Name, Code, CreatedDate)`
 
-`Party (Id PK, Name, ContractId FK, SocialId, CreatedDate)`
+`Party (Id PK, Name, ContractId FK, SocialId, AttorneyId FK, CreatedDate)`
+
+`Attorney (Id PK, Name, Status, CreatedDate)`
 
 Social IDs are 10 digits and always start with 1 or 2. Because they cannot start with
 zero, `bigint` is safe here — a leading zero can never be lost.
+
+`Attorney.Status` is `approved` or `faked`. It is validated in C# *and* constrained by
+a `CK_Attorney_Status` check constraint, so an invalid value cannot arrive by any route.
+`Party.AttorneyId` is nullable: a party may have no attorney on file.
 
 ## Swagger UI
 
@@ -70,8 +76,9 @@ The raw document is at `/openapi/v1.json`.
 ## API
 
 ```
-GET  /api/contracts?socialId={long}&name={string?}   -> 200 / 400 / 401
-POST /auth/dev-token                                 Development only
+GET  /api/contracts?socialId={long}&name={string?}      -> 200 / 400 / 401
+GET  /api/attorneys?socialId={long?}&partyName={string?} -> 200 / 400 / 401
+POST /auth/dev-token                                  Development only
 GET  /health                                          anonymous
 ```
 
@@ -94,6 +101,31 @@ A malformed social ID returns **400** with `"Social ID must be 10 digits startin
 or 2."` rather than an empty array. Without that, a member who mistypes an ID reads "no
 contracts found" as "this customer does not exist" — a wrong answer rather than a failed
 lookup.
+
+### Attorneys
+
+`socialId` and `partyName` are both optional but **at least one is required** — with
+neither, the endpoint would return every attorney on file, which is a data dump rather
+than a lookup.
+
+```json
+[
+  {
+    "attorneyId": 1,
+    "attorneyName": "Lena Fischer",
+    "status": "approved",
+    "partyId": 3,
+    "partyName": "B Karimi",
+    "socialId": 1987654321
+  }
+]
+```
+
+The response includes the matched party, not just the attorney, so the answer can be
+confirmed to be about the party that was asked about.
+
+Parties with no attorney on file are excluded. `[]` therefore means "no attorney on file
+for that party", which is a different answer from "the attorney is approved".
 
 All requests require `Authorization: Bearer <token>`; missing or invalid tokens get 401.
 
@@ -168,11 +200,21 @@ restores the conversation, which is what lets the agent ask a follow-up question
 
 ## Adding a lookup
 
-1. Add the tool in `src/OpsLookup.Graph/tools/contracts.py` with typed parameters.
+1. Add the tool in `src/OpsLookup.Graph/tools/` with typed parameters — `contracts.py`
+   for contracts, `attorneys.py` for attorneys.
 2. Add the endpoint in `src/OpsLookup.Api/Endpoints/`.
+3. Add the tool to the list in `graph/build.py` **and** mention it in `SYSTEM_PROMPT`.
+4. Register it where the tools are assembled: `build_tools(client) + build_attorney_tools(client)`
+   in both `api.py` and `host.py`.
+5. Copy the Python file into `src/OpsLookup.NetCorePythonNetApp/Python/tools/`. The two
+   Python trees are deliberate physical copies, so they drift unless you copy.
 
 The model chooses among named tools and supplies typed arguments. It never emits SQL, a
 table name, or a filter expression.
+
+Step 3 is not optional. A tool the model has never been told about goes uncalled, and
+every answer becomes a guess. `toolCalls: 0` in a `/chat` response is the signal — see
+`docs/REFERENCE.md` §7.
 
 ## Tests
 
@@ -200,15 +242,31 @@ Two things to know if you adapt it:
 
 ### `smoke_test.py` — same checks, headless
 
+20 assertions across 8 groups: graph routing, thread continuity, the contract tool, and
+the attorney tool (by social ID, by partial party name, the no-attorney case, and a
+rejected social ID). Uses a stubbed model, so no LongCat key is needed.
+
 ```powershell
 cd src\OpsLookup.Graph
 .\.venv\Scripts\python.exe smoke_test.py
 ```
 
+It needs the .NET API running and a fresh `API_TOKEN` — dev tokens last 60 minutes.
+Refresh with:
+
+```powershell
+$tok = Invoke-RestMethod "http://localhost:5250/auth/dev-token?operatorId=op-4471" -Method Post
+```
+
 ## Notes
 
+- **Never put a real token or API key in `.env.example`.** It is committed to git; `.env`
+  is ignored. Both example files must stay blank.
 - `dotnet ef migrations add <Name> --project src\OpsLookup.Api\OpsLookup.Api.csproj`
   The migration files are the schema history and belong in version control.
+- `dotnet ef database drop --force --project src\OpsLookup.Api\OpsLookup.Api.csproj`
+  `DevSeeder` seeds only a completely empty database, so this is how you pick up newly
+  seeded entities.
 - `dotnet build` at the root builds the solution (`OpsLookup.slnx`).
 - The API targets **net9** with EF Core 9.0.20. The OpenAPI document is shaped in
   `src/OpsLookup.Api/OpenApi/SwaggerConfiguration.cs`, using the .NET 9 package

@@ -143,14 +143,20 @@ public sealed class PythonBridge : IAsyncDisposable
     }
 
     // -------------------------------------------------------------- py marshalling
-    private static PyObject ToPy(object value) => value switch
+    private static PyObject ToPy(object? value) => value switch
     {
+        // PyNone, not null. A C# null passed straight through surfaces inside
+        // Python as an opaque "unsupported type" error at the call site rather
+        // than as the argument it actually is. host.run_turn expects real
+        // strings, so this is a guard rather than a supported path.
+        null => throw new ArgumentNullException(
+            nameof(value), "Cannot pass null across the Python bridge."),
         string s => new PyString(s),
         int i => new PyInt(i),
         long l => new PyInt(l),
         double d => new PyFloat(d),
         _ => throw new ArgumentOutOfRangeException(
-            nameof(value), value, "Unsupported argument type for the Python bridge."),
+            nameof(value), value, $"Unsupported argument type for the Python bridge: {value.GetType()}."),
     };
 
     private static string InvokeString(PyObject function, params object[] args)

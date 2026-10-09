@@ -46,7 +46,8 @@ isn't one.
                        │     └─ graph.ainvoke()       │
                        │          ├─ llm  ───────────────┼──▶ LongCat / OpenCode Zen
                        │          └─ action (tool)      │
-                       │               get_contract()   │
+                       │          get_contract()  or   │
+                       │          get_attorney()        │
                        └───────────────┬───────────────┘
                                        │  HTTP + Bearer token
                                        │  (fresh httpx client per turn)
@@ -54,7 +55,9 @@ isn't one.
                        ┌───────────────────────────────┐
                        │ OpsLookup.Api   :5250          │
                        │   GET /api/contracts          │
+                       │   GET /api/attorneys          │
                        │   ContractRepository          │
+                       │   AttorneyRepository          │
                        │   EF Core ─▶ SQL Server       │
                        └───────────────────────────────┘
 ```
@@ -286,7 +289,7 @@ retries indefinitely.
 
 ### Step 9 — The tool calls the .NET API
 
-`Python/tools/contracts.py` declares exactly one tool:
+`Python/tools/contracts.py` and `Python/tools/attorneys.py` declare two tools:
 
 ```python
 StructuredTool(
@@ -294,12 +297,29 @@ StructuredTool(
     args_schema=GetContractInput,     # social_id: int, name: str | None
     coroutine=get_contract,           # explicit — see note
 )
+
+StructuredTool(
+    name="get_attorney",
+    args_schema=GetAttorneyInput,     # social_id: int | None, party_name: str | None
+    coroutine=get_attorney,           # explicit — see note
+)
+```
+
+Both are assembled in one expression, in `api.py` and again in `host.py`:
+
+```python
+tools = build_tools(client) + build_attorney_tools(client)
 ```
 
 > `coroutine=` is set explicitly. `StructuredTool.from_function()` does not
 > reliably detect an async closure and silently wraps it as sync, which creates
 > the coroutine without ever awaiting it — the API is never called and the tool
 > returns nothing.
+
+A tool that is declared but not added to that list is invisible to the model. So is a
+tool that is added but never mentioned in `SYSTEM_PROMPT`, which is why the prompt names
+both and explains what `approved` and `faked` mean. `toolCalls: 0` in a `/chat` response
+is the signal that the model has nothing it is willing to call.
 
 `Python/tools/api_client.py` does the HTTP:
 
@@ -314,11 +334,22 @@ async def get_contracts(self, social_id: int, name: str | None = None):
     return response.json()
 ```
 
+`get_attorneys` follows the same shape, with two filters that are both optional:
+
+```python
+if social_id is None and not party_name:
+    raise LookupApiError("Provide a social ID, a party name, or both.")
+params = {}
+if social_id is not None:  params["socialId"] = str(social_id)
+if party_name:             params["partyName"] = party_name
+response = await self._client.get("/api/attorneys", params=params)
+```
+
 Headers were set once when the client was constructed:
 `Authorization: Bearer <API_TOKEN>` and `X-Operator-Id`.
 
-`get_contract` catches `LookupApiError` and returns it as **text** rather than
-letting it propagate:
+Both tools catch `LookupApiError` and return it as **text** rather than letting it
+propagate:
 
 ```python
 except LookupApiError as exc:
@@ -370,6 +401,18 @@ Response:
 
 That JSON becomes the tool result the model reads.
 
+The attorney path is the same shape end to end, with a different response:
+
+```json
+[{ "attorneyId": 1, "attorneyName": "Lena Fischer", "status": "approved",
+   "partyId": 3, "partyName": "B Karimi", "socialId": 1987654321 }]
+```
+
+`status` is reported exactly as stored. `SYSTEM_PROMPT` tells the model that `approved`
+means cleared to act and `faked` means flagged as fraudulent, and instructs it not to
+soften the wording — a member acting on "possibly not quite approved" is worse off than
+one given the real answer.
+
 ### Step 11 — Back out
 
 `host.run_turn` counts the tool calls made anywhere in the transcript, which is
@@ -387,14 +430,19 @@ tool_calls = sum(len(getattr(m, "tool_calls", []) or []) for m in messages)
 |---|---|---|
 | 1 | Browser → .NET | `{ ticketId, message }` |
 | 2 | .NET → Python | `run_turn(ticketId: str, message: str, operatorId: str) -> str` |
-| 3 | Python → model | messages + one tool schema |
-| 4 | Tool → .NET API | `GET /api/contracts?socialId=&name=` + `Bearer` |
-| 5 | .NET API → Python | `[{ contractCode, socialId, partyName, contractName }]` |
+| 3 | Python → model | messages + both tool schemas |
+| 4 | Tool → .NET API | `GET /api/contracts?socialId=&name=` or `GET /api/attorneys?socialId=&partyName=`, + `Bearer` |
+| 5 | .NET API → Python | contracts: `[{ contractCode, socialId, partyName, contractName }]` · attorneys: `[{ attorneyId, attorneyName, status, partyId, partyName, socialId }]` |
 | 6 | Python → .NET | `{ threadId, reply, toolCalls }` or `{ error }` |
 | 7 | .NET → Browser | same, as `ChatOutcome` |
 
 Only boundary 2 crosses the language boundary, and it carries **strings and
 numbers only** — no complex objects to marshal.
+
+A malformed body at boundary 1 gets **400**, not 500. `ChatRequest` declares
+non-nullable strings, but ASP.NET does not enforce that: without an explicit check a
+missing `message` deserialises to null, crosses the bridge, and fails there as though
+the server had broken.
 
 ---
 

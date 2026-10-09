@@ -1,7 +1,7 @@
 namespace OpsLookup.Api.Entities;
 
 /// <summary>
-/// Party (Id PK, Name, ContractId FK, SocialId, CreatedDate)
+/// Party (Id PK, Name, ContractId FK, SocialId, AttorneyId FK, CreatedDate)
 /// </summary>
 public class Party
 {
@@ -16,7 +16,15 @@ public class Party
     /// </summary>
     public long SocialId { get; set; }
 
+    /// <summary>
+    /// Optional. A party may have no attorney on file, so this is nullable rather
+    /// than a required relationship.
+    /// </summary>
+    public int? AttorneyId { get; set; }
+
     public DateTime CreatedDate { get; set; }
 
     public Contract Contract { get; set; } = null!;
+
+    public Attorney? Attorney { get; set; }
 }

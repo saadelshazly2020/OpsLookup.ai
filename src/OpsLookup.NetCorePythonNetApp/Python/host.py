@@ -52,6 +52,7 @@ from graph.build import build_graph  # noqa: E402
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 from llm import build_llm  # noqa: E402
 from tools.api_client import LookupApiClient  # noqa: E402
+from tools.attorneys import build_attorney_tools  # noqa: E402
 from tools.contracts import build_tools  # noqa: E402
 
 _warm = threading.Event()
@@ -124,9 +125,9 @@ def warmup() -> str:
             timeout_seconds=settings.request_timeout_seconds,
         )
 
-        tools = build_tools(client)
+        tools = build_tools(client) + build_attorney_tools(client)
         build_llm(settings, tools)
-        _log("warmup: graph components built")
+        _log(f"warmup: graph components built ({len(tools)} tools)")
     except Exception as exc:  # noqa: BLE001 - reported to .NET as a string
         _log(f"warmup: FAILED {type(exc).__name__}: {exc}")
         _log(traceback.format_exc())
@@ -169,7 +170,7 @@ async def _run_turn(thread_id: str, message: str, operator_id: str) -> dict:
             AsyncSqliteSaver.from_conn_string(_checkpoint_path(settings))
         )
 
-        tools = build_tools(client)
+        tools = build_tools(client) + build_attorney_tools(client)
         graph = build_graph(build_llm(settings, tools), tools, checkpointer)
 
         result = await graph.ainvoke(

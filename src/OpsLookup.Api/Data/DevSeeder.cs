@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OpsLookup.Api.Entities;
+using OpsLookup.Api.Security;
 
 namespace OpsLookup.Api.Data;
 
@@ -7,6 +8,11 @@ namespace OpsLookup.Api.Data;
 /// Development only. Seeding here rather than via <c>HasData</c> keeps demo rows out of
 /// the migration history, which is where real data must never end up.
 /// </summary>
+/// <remarks>
+/// Seeds only a completely empty database, so adding a new seeded entity means a
+/// reset is needed before it appears: <c>dotnet ef database drop</c>. Seeded rows
+/// are not real data and are safe to discard.
+/// </remarks>
 public static class DevSeeder
 {
     public static async Task SeedAsync(ContractDbContext db, CancellationToken cancellationToken = default)
@@ -26,12 +32,29 @@ public static class DevSeeder
 
         db.Contracts.AddRange(maintenance, network, audit);
 
+        // Attorneys are referenced by navigation from Party, so EF assigns the
+        // identity keys and fills the foreign keys.
+        var approvedAttorney = new Attorney { Name = "Lena Fischer", Status = AttorneyStatus.Approved, CreatedDate = created };
+        var fakedAttorney = new Attorney { Name = "Marcus Webb", Status = AttorneyStatus.Faked, CreatedDate = created };
+
+        db.Attorneys.AddRange(approvedAttorney, fakedAttorney);
+
         db.Parties.AddRange(
             new Party { Name = "A Nasser", Contract = maintenance, SocialId = 1234567890, CreatedDate = created },
             new Party { Name = "A Nasser", Contract = network, SocialId = 1234567890, CreatedDate = created },
-            new Party { Name = "B Karimi", Contract = maintenance, SocialId = 1987654321, CreatedDate = created },
-            new Party { Name = "C Delacroix", Contract = audit, SocialId = 2111111111, CreatedDate = created });
+            new Party
+            {
+                Name = "B Karimi", Contract = maintenance, SocialId = 1987654321,
+                Attorney = approvedAttorney, CreatedDate = created,
+            },
+            new Party
+            {
+                Name = "C Delacroix", Contract = audit, SocialId = 2111111111,
+                Attorney = fakedAttorney, CreatedDate = created,
+            });
 
+        // A Nasser is deliberately left with no attorney, so the "no attorney on
+        // file" path is exercised by the seed data rather than only in theory.
         await db.SaveChangesAsync(cancellationToken);
     }
 }
