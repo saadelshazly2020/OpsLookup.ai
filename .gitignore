@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+.vs/
+*.user
+
+# Local databases and runtime state
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+checkpoints.sqlite
+
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Vite / Vue build output — generated from ClientApp/src
+**/wwwroot/
+**/node_modules/
+**/logs/
+
+# app run artefacts
+run.log
+run.err

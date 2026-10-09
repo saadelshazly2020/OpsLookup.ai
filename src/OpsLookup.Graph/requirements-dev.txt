@@ -1,0 +1,12 @@
+# Everything in requirements.txt, plus what the notebook needs.
+#
+#   python -m pip install -r requirements-dev.txt
+#   python -m ipykernel install --user --name opslookup --display-name "opslookup (Python 3.14)"
+#
+-r requirements.txt
+
+# Check API.ipynb needs a kernel in this venv. Without it, notebooks fall back to
+# a system Python that does not have langgraph installed.
+ipykernel>=7.4.0
+nbformat>=5.11
+nbclient>=0.11

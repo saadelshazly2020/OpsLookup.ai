@@ -1,0 +1,8 @@
+langgraph==1.2.14
+langgraph-checkpoint-sqlite==3.1.1
+langchain-openai==1.6.7
+httpx==0.28.1
+python-dotenv>=1.0
+
+# Not needed here: FastAPI and uvicorn. ASP.NET Core is the web server in this
+# app, so the graph is embedded rather than served by a Python web framework.

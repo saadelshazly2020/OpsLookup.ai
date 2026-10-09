@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpsLookup Agent</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --border: #dfe3e8;
+    --text: #1b1f24;
+    --muted: #6b7480;
+    --accent: #2c5fd6;
+    --accent-soft: #e8eefb;
+    --you: #2c5fd6;
+    --agent: #ffffff;
+    --error: #b3261e;
+    --error-soft: #fdecea;
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --surface: #1c2024;
+      --border: #2e343b;
+      --text: #e6e9ec;
+      --muted: #9aa4b0;
+      --accent: #6c9bff;
+      --accent-soft: #1e2a44;
+      --you: #3a5f9e;
+      --agent: #23282e;
+      --error: #ff8a80;
+      --error-soft: #3a1f1d;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+
+  header .sub { color: var(--muted); font-size: 13px; }
+
+  #thread {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .msg { max-width: 720px; width: 100%; margin: 0 auto; }
+
+  .msg .who {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    margin-bottom: 5px;
+  }
+
+  .bubble {
+    background: var(--agent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 11px 14px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .msg.you { align-self: flex-end; }
+  .msg.you .who { text-align: right; }
+  .msg.you .bubble { background: var(--you); border-color: transparent; color: #fff; }
+
+  .msg.error .bubble {
+    background: var(--error-soft);
+    border-color: var(--error);
+    color: var(--error);
+  }
+
+  .badge {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 2px 10px;
+  }
+
+  /* empty state */
+  #empty { max-width: 720px; margin: 24px auto 0; color: var(--muted); }
+  #empty h2 { font-size: 17px; color: var(--text); margin: 0 0 6px; }
+  #empty p { margin: 0 0 14px; font-size: 14px; }
+  .examples { display: flex; flex-direction: column; gap: 8px; }
+  .examples button {
+    text-align: left;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 13px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .examples button:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  footer {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+  }
+
+  form { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+
+  textarea {
+    flex: 1;
+    resize: none;
+    min-height: 44px;
+    max-height: 160px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  button.send {
+    height: 44px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  button.send:disabled { opacity: .5; cursor: not-allowed; }
+
+  .meta {
+    max-width: 720px;
+    margin: 8px auto 0;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .meta button {
+    background: none;
+    border: 0;
+    color: var(--muted);
+    text-decoration: underline;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .dots span {
+    display: inline-block;
+    width: 6px; height: 6px;
+    margin-right: 3px;
+    border-radius: 50%;
+    background: var(--muted);
+    animation: blink 1.2s infinite;
+  }
+  .dots span:nth-child(2) { animation-delay: .2s; }
+  .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 60%, 100% { opacity: .25 } 30% { opacity: 1 } }
+
+  @media (max-width: 600px) {
+    #thread, footer { padding: 12px; }
+    .msg.you .bubble { color: #fff; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>OpsLookup Agent</h1>
+  <span class="sub">Ask about a party's contracts in plain language.</span>
+</header>
+
+<div id="thread" role="log" aria-live="polite" aria-label="Conversation">
+  <div id="empty">
+    <h2>Start a lookup</h2>
+    <p>Describe the ticket in your own words. Include the social ID if you have it.</p>
+    <div class="examples">
+      <button type="button" data-q="What contracts are held for social ID 1234567890?">What contracts are held for social ID 1234567890?</button>
+      <button type="button" data-q="Can you look up social ID 2111111111 for me?">Can you look up social ID 2111111111 for me?</button>
+      <button type="button" data-q="Check social ID 1234567890, only the network contract">Check social ID 1234567890, only the network contract</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <form id="composer" autocomplete="off">
+    <label for="input" class="sub" style="position:absolute;left:-9999px">Message</label>
+    <textarea id="input" rows="1" placeholder="Describe the ticket…  (Enter to send, Shift+Enter for a new line)"></textarea>
+    <button class="send" id="send" type="submit">Send</button>
+  </form>
+  <div class="meta">
+    <span id="threadid"></span>
+    <span id="status"></span>
+    <button type="button" id="newthread">New conversation</button>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  const threadEl  = document.getElementById("thread");
+  const emptyEl   = document.getElementById("empty");
+  const form      = document.getElementById("composer");
+  const input     = document.getElementById("input");
+  const sendBtn   = document.getElementById("send");
+  const statusEl  = document.getElementById("status");
+  const threadIdEl= document.getElementById("threadid");
+
+  const THREAD_KEY = "opslookup.thread_id";
+
+  // One thread id per browser tab/session, so a follow-up question keeps context.
+  function currentThreadId() {
+    let id = localStorage.getItem(THREAD_KEY);
+    if (!id) {
+      id = "T-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+      localStorage.setItem(THREAD_KEY, id);
+    }
+    return id;
+  }
+
+  function showThreadId() {
+    threadIdEl.textContent = "Ticket " + currentThreadId();
+  }
+
+  function setStatus(text) { statusEl.textContent = text || ""; }
+
+  function scrollToEnd() {
+    threadEl.scrollTop = threadEl.scrollHeight;
+  }
+
+  function addMessage(role, text, opts) {
+    if (emptyEl) { emptyEl.remove(); }
+    opts = opts || {};
+
+    const wrap = document.createElement("div");
+    wrap.className = "msg " + role + (opts.error ? " error" : "");
+
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = role === "you" ? "You" : (opts.error ? "Problem" : "Agent");
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = text;
+
+    wrap.appendChild(who);
+    wrap.appendChild(bubble);
+
+    if (opts.badge) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = opts.badge;
+      wrap.appendChild(badge);
+    }
+
+    threadEl.appendChild(wrap);
+    scrollToEnd();
+    return wrap;
+  }
+
+  function showThinking() {
+    const wrap = document.createElement("div");
+    wrap.className = "msg agent";
+    wrap.id = "thinking";
+    wrap.innerHTML =
+      '<div class="who">Agent</div>' +
+      '<div class="bubble dots"><span></span><span></span><span></span></div>';
+    threadEl.appendChild(wrap);
+    scrollToEnd();
+  }
+
+  function clearThinking() {
+    const el = document.getElementById("thinking");
+    if (el) el.remove();
+  }
+
+  function autosize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  }
+
+  async function send(text) {
+    const message = (text !== undefined ? text : input.value).trim();
+    if (!message || sendBtn.disabled) return;
+
+    addMessage("you", message);
+    input.value = "";
+    autosize();
+    setStatus("");
+    sendBtn.disabled = true;
+    showThinking();
+
+    try {
+      const response = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_id: currentThreadId(), message: message })
+      });
+
+      clearThinking();
+
+      if (!response.ok) {
+        let detail = "";
+        let hint = "";
+        try {
+          const body = await response.json();
+          detail = body.detail || body.message || "";
+          hint = body.hint || "";
+        } catch (e) { /* non-JSON error body */ }
+
+        let text;
+        if (response.status === 422) {
+          text = "That message could not be sent. Check the ticket reference and try again.";
+        } else {
+          text = detail || ("Request failed (HTTP " + response.status + ").");
+        }
+
+        const wrap = addMessage("agent", text, { error: true });
+        if (hint) {
+          const note = document.createElement("div");
+          note.className = "badge";
+          note.textContent = hint;
+          wrap.appendChild(note);
+        }
+        return;
+      }
+
+      const data = await response.json();
+      const badge = data.tool_calls > 0
+        ? "Looked up " + data.tool_calls + " time" + (data.tool_calls === 1 ? "" : "s") + " in the database"
+        : null;
+
+      addMessage("agent", data.reply, { badge: badge });
+      setStatus(data.tool_calls > 0 ? "Answered from a database lookup." : "Answered without a lookup.");
+    } catch (err) {
+      clearThinking();
+      addMessage("agent",
+        "Could not reach the agent service. Check it is running, then try again.",
+        { error: true });
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    send();
+  });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  input.addEventListener("input", autosize);
+
+  document.querySelectorAll(".examples button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      send(btn.dataset.q);
+    });
+  });
+
+  document.getElementById("newthread").addEventListener("click", function () {
+    localStorage.removeItem(THREAD_KEY);
+    threadEl.innerHTML = "";
+    location.reload();
+  });
+
+  showThreadId();
+  autosize();
+  input.focus();
+})();
+</script>
+</body>
+</html>
