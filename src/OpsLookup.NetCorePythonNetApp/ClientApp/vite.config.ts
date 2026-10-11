@@ -1,11 +1,12 @@
 import vue from '@vitejs/plugin-vue'
+import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 
 // The build lands in ../wwwroot so ASP.NET Core serves the page from the same
 // origin as /api/chat. No CORS, and no Node needed to run the app.
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss()],
   base: './',
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },

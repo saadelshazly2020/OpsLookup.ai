@@ -433,7 +433,7 @@ tool_calls = sum(len(getattr(m, "tool_calls", []) or []) for m in messages)
 | 3 | Python → model | messages + both tool schemas |
 | 4 | Tool → .NET API | `GET /api/contracts?socialId=&name=` or `GET /api/attorneys?socialId=&partyName=`, + `Bearer` |
 | 5 | .NET API → Python | contracts: `[{ contractCode, socialId, partyName, contractName }]` · attorneys: `[{ attorneyId, attorneyName, status, partyId, partyName, socialId }]` |
-| 6 | Python → .NET | `{ threadId, reply, toolCalls }` or `{ error }` |
+| 6 | Python → .NET | `{ threadId, reply, toolCalls, lookupFailed }` or `{ error }` |
 | 7 | .NET → Browser | same, as `ChatOutcome` |
 
 Only boundary 2 crosses the language boundary, and it carries **strings and
@@ -444,6 +444,12 @@ non-nullable strings, but ASP.NET does not enforce that: without an explicit che
 missing `message` deserialises to null, crosses the bridge, and fails there as though
 the server had broken.
 
+`lookupFailed` exists because `toolCalls` cannot answer "was this verified?". It counts
+invocations, not successes — an expired `API_TOKEN` still produces 1. Both tools return
+failures as `{"error": ...}` text rather than raising, so `graph/build.py::any_tool_error`
+parses them back out of the transcript and the page badges the answer red instead of
+green.
+
 ---
 
 ## 4. Failure paths
@@ -452,13 +458,28 @@ the server had broken.
 |---|---|---|
 | Malformed social ID | `SocialIdRule`, in .NET | 400 → tool error text → model explains it |
 | Expired `API_TOKEN` | `LookupApiClient` | 401 → same route |
-| Model cannot call tools | nowhere — **silent** | `toolCalls: 0`, no badge. **Every answer is a guess.** |
+| Model cannot call tools | nowhere — **silent** | `toolCalls: 0`, amber badge. **Every answer is a guess.** |
+| HTML in a database name | `renderMarkdown` | stripped by DOMPurify before it reaches the DOM. Reply text is not purely model-authored — party and contract names come from SQL Server, so this is the load-bearing check on the one `v-html` in the app |
 | `MissingSessionID` | provider | mapped by `_describe()` to a readable message |
 | Python still warming | `bridge.IsReady` | 503, page shows the warning pill |
 | Worker thread dead | — | requests time out; check `Python/logs/progress.log` |
 
 Every Python-side failure is caught and returned as JSON with an `error` key, so a
 Python exception never becomes an HTTP 500 with an empty body.
+
+### Why the page uses `v-html`
+
+`ChatMessage.vue` renders replies with `v-html`, which is normally a red flag. It is
+here because the agent returns **markdown** — contract tables were rendering as literal
+pipe characters before this. The text is not purely model-authored: party names and
+contract names are read from SQL Server, so a contract named
+`<img src=x onerror=…>` would otherwise execute in the operator's browser.
+
+`services/markdown.ts` therefore parses with `marked` and passes the result through
+`DOMPurify` with an explicit allow-list of tags and attributes. That call is the whole
+security boundary — do not remove it, and do not add `sanitize: false`. It was verified
+by planting a payload in a real contract row and confirming no element was created and
+no handler ran.
 
 ---
 

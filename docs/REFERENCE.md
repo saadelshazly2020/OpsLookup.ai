@@ -294,6 +294,24 @@ Every one of these failed silently or misleadingly. Worth remembering.
 | `dotnet run` listens on 5036, Vite dev proxy targets 5100 | `start.ps1` passes `--urls http://localhost:5100`, but plain `dotnet run` uses `launchSettings.json`, which said 5036 | Set `applicationUrl` in `launchSettings.json` to 5100 so both paths agree |
 | `CS0021: Cannot apply indexing with [] to LocalView<Attorney>` | `db.Set<T>().Local` is a `LocalView<T>`, not a list | Hold the entity in a local variable and assign it by navigation; EF fills the FKs |
 | New seeded entity does not appear | `DevSeeder` seeds only a **completely empty** database | `dotnet ef database drop --force`. Deliberate, and documented on the seeder |
+| Header and footer float with dead space below | Replacing `main.css` dropped `html, body, #app { height: 100% }`, which the shell's `h-full` depends on | Restore it in `@layer base` |
+| Theme toggle appears dead in a test | Vue watchers flush on the next tick; reading `localStorage` synchronously right after `.click()` shows the old value | `await` a tick before asserting. `aria-pressed` updates immediately and proves the click landed |
+| A good answer is badged red | `any_tool_error` scanned the whole transcript, but the checkpointer replays the entire thread, so a failure from an earlier turn poisoned later turns | Scan only messages after the last `HumanMessage` |
+
+### Front end
+
+Tailwind v4, configured in CSS rather than `tailwind.config.js`. Tokens live in
+`@theme` in `ClientApp/src/assets/main.css`, which is why `bg-canvas` / `text-muted` /
+`border-line` work without any config file. Dark mode is a `@custom-variant` keyed off
+a `.dark` class on `<html>`; the theme colours are re-declared under `.dark` so anything
+driven by a token flips without needing its own `dark:` variant.
+
+Two things that are load-bearing rather than decorative:
+
+- **`services/markdown.ts` sanitises before `v-html`.** Replies contain database-sourced
+  text. Without DOMPurify a contract name could run script in the operator's browser.
+- **The badge has three states.** See the badge section in `README.md`; collapsing
+  "lookup failed" into "looked up N times" is the easy regression to reintroduce.
 
 ### LongCat
 

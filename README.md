@@ -148,10 +148,31 @@ origin as the API, so there is no CORS setup.
 | Behaviour | Why |
 |---|---|
 | Ticket id kept in `localStorage` | A follow-up question keeps its conversation context |
-| "Looked up N times" badge under each answer | Staff can see whether the answer came from the database or from the model's own knowledge. An answer with no badge was **not** verified against data. |
+| Lookup badge under each answer, in three colours | Staff can see whether the answer came from the database. Green = read from SQL, amber = never looked, red = the lookup ran but failed. See the badge section below. |
 | Example prompts on the empty state | The audience is non-technical; it shows what to type |
 | Enter sends, Shift+Enter newlines | |
 | Dark mode, `aria-live` log | |
+
+### The lookup badge
+
+`toolCalls` counts tool **invocations**, not successes, so it cannot by itself answer
+"was this verified?". A turn where the API rejected the token still reports 1 lookup.
+Both tools return failures as `{"error": ...}` text rather than raising, so
+`graph/build.py::any_tool_error` reads the signal back out of the transcript and the API
+returns `lookupFailed` alongside `toolCalls`.
+
+The badge then has three honest states rather than two:
+
+| State | Means |
+|---|---|
+| Green, "Looked up N times in the database" | Rows were actually read |
+| Amber, "Not checked against the database" | The model answered without calling a tool |
+| Red, "Lookup failed — not verified" | A tool ran and failed. Nothing was read. |
+
+One subtlety worth keeping: `any_tool_error` only inspects messages **after the last
+`HumanMessage`**. The checkpointer replays the whole thread, so a failure from an
+earlier turn is still in the list — scanning all of it would mark a later good answer
+as failed because of something that happened before.
 
 ### 1. API
 

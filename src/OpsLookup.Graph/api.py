@@ -18,7 +18,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field
 
 from config import Settings, load_settings
-from graph.build import build_graph
+from graph.build import any_tool_error, build_graph
 from llm import build_llm
 from tools.api_client import LookupApiClient
 from tools.attorneys import build_attorney_tools
@@ -85,6 +85,10 @@ class ChatResponse(BaseModel):
     ticket_id: str
     reply: str
     tool_calls: int
+    # True when a tool ran in this turn but failed. `tool_calls` counts
+    # invocations, not successes, so without this a client cannot tell a
+    # successful lookup from one the API rejected.
+    lookup_failed: bool = False
 
 
 class ChatError(BaseModel):
@@ -133,6 +137,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         ticket_id=payload.ticket_id,
         reply=reply if isinstance(reply, str) else str(reply),
         tool_calls=tool_calls,
+        lookup_failed=any_tool_error(messages),
     )
 
 

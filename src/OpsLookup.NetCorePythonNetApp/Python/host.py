@@ -48,7 +48,7 @@ load_dotenv(PYTHON_DIR / ".env", override=False)
 # Imported at module scope so the cost is paid once, at warmup, rather than on
 # the first ticket. `host` is imported after sys.path is prepared by .NET.
 from config import load_settings  # noqa: E402
-from graph.build import build_graph  # noqa: E402
+from graph.build import any_tool_error, build_graph  # noqa: E402
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 from llm import build_llm  # noqa: E402
 from tools.api_client import LookupApiClient  # noqa: E402
@@ -193,6 +193,7 @@ async def _run_turn(thread_id: str, message: str, operator_id: str) -> dict:
             "threadId": thread_id,
             "reply": reply if isinstance(reply, str) else str(reply),
             "toolCalls": tool_calls,
+            "lookupFailed": any_tool_error(messages),
         }
 
 

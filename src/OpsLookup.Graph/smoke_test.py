@@ -14,12 +14,13 @@ Needs the .NET API listening on API_BASE_URL and API_TOKEN set in .env
 """
 
 import asyncio
+import json
 import os
 import sys
 
 from dotenv import load_dotenv
 
-from graph.build import build_graph, route_after_llm
+from graph.build import any_tool_error, build_graph, route_after_llm
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END
@@ -152,6 +153,36 @@ async def main() -> int:
     calling = AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}])
     check("tool_calls -> action", route_after_llm({"messages": [calling]}) == "action")
     check("plain text -> end", route_after_llm({"messages": [AIMessage(content="hi")]}) == END)
+
+    # --- 4b. any_tool_error, the badge's input -------------------------------
+    # toolCalls counts invocations, not successes. These guard the case where a
+    # client would otherwise badge a failed lookup as verified.
+    print("4b. any_tool_error")
+    ok_tool = ToolMessage(content=json.dumps({"results": [{"contractCode": 1}]}), tool_call_id="a")
+    err_tool = ToolMessage(content=json.dumps({"error": "token rejected"}), tool_call_id="b")
+
+    check(
+        "successful tool -> not a failure",
+        not any_tool_error([HumanMessage("q"), ok_tool]),
+    )
+    check(
+        "failed tool -> failure",
+        any_tool_error([HumanMessage("q"), err_tool]),
+    )
+    check(
+        "no tool calls -> not a failure",
+        not any_tool_error([HumanMessage("q"), AIMessage(content="just text")]),
+    )
+    check(
+        # The regression this exists for: the checkpointer replays the whole
+        # thread, so an old failure must not taint a later good turn.
+        "stale failure from an earlier turn is ignored",
+        not any_tool_error([HumanMessage("old"), err_tool, HumanMessage("new"), ok_tool]),
+    )
+    check(
+        "unparseable tool output is not asserted as a failure",
+        not any_tool_error([HumanMessage("q"), ToolMessage(content="not json", tool_call_id="c")]),
+    )
 
     # --- 5. attorney tool ----------------------------------------------------
     print("5. attorney by social ID")

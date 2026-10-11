@@ -3,6 +3,12 @@ export interface ChatReply {
   threadId: string
   reply: string
   toolCalls: number
+  /**
+   * True when a tool ran but failed — e.g. the API rejected the token.
+   * `toolCalls` counts invocations, not successes, so without this the UI
+   * would badge a failed lookup as "read from the database".
+   */
+  lookupFailed?: boolean
 }
 
 /** Body the ASP.NET Core host returns when the graph itself failed. */
@@ -25,6 +31,8 @@ export interface Message {
   text: string
   /** Database lookups behind this reply. 0 means the answer was not verified. */
   toolCalls: number
+  /** A lookup was attempted but failed. The answer is not verified. */
+  lookupFailed?: boolean
   isError: boolean
 }
 

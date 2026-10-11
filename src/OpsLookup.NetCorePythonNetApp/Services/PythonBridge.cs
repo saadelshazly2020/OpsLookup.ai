@@ -360,10 +360,15 @@ public sealed class PythonBridge : IAsyncDisposable
                 Error: true);
         }
 
+        // ToolCalls counts invocations, not successes, so a turn whose lookup
+        // failed still reports 1. LookupFailed is what stops the UI claiming
+        // the answer was read from the database when it was not.
         return new ChatOutcome(
             ThreadId: document.RootElement.GetProperty("threadId").GetString() ?? ticketId,
             Reply: document.RootElement.GetProperty("reply").GetString() ?? string.Empty,
             ToolCalls: document.RootElement.GetProperty("toolCalls").GetInt32(),
+            LookupFailed: document.RootElement.TryGetProperty("lookupFailed", out var failed)
+                && failed.ValueKind is JsonValueKind.True,
             Error: false);
     }
 
@@ -393,4 +398,5 @@ public sealed record ChatOutcome(
     string ThreadId,
     string Reply,
     int ToolCalls,
-    bool Error);
+    bool LookupFailed = false,
+    bool Error = false);

@@ -8,10 +8,11 @@ A clarifying question is therefore the same code path as a final answer: both ar
 plain text with no tool call.
 """
 
+import json
 import logging
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -51,6 +52,43 @@ def route_after_llm(state: TicketState) -> str:
     """Conditional edge: tool calls go to action, anything else finishes the turn."""
     last: AnyMessage = state["messages"][-1]
     return "action" if getattr(last, "tool_calls", None) else END
+
+
+def any_tool_error(messages: list[AnyMessage]) -> bool:
+    """True if a tool run *in this turn* reported a failure.
+
+    A tool-call count alone cannot answer this. `toolCalls` counts invocations,
+    not successes, so a turn where the API rejected the token still counts 1 —
+    and a client reading that as "verified against the database" is being told
+    something false. Both tools return failures as `{"error": ...}` JSON text
+    rather than raising, so the signal has to be read back out of the message.
+
+    Scoped to the current turn deliberately. The checkpointer replays the whole
+    thread into `messages`, so a failure from an earlier turn is still in that
+    list; scanning all of it marks this turn's good answer as failed because of
+    something that happened earlier. The last HumanMessage is the one just sent,
+    so everything after it belongs to this turn.
+    """
+    start = 0
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            start = index
+            break
+
+    for message in messages[start:]:
+        if not isinstance(message, ToolMessage):
+            continue
+        content = message.content
+        if not isinstance(content, str) or not content.startswith("{"):
+            continue
+        try:
+            if "error" in json.loads(content):
+                return True
+        except (ValueError, TypeError):
+            # Not JSON, or not an object. Treat as "cannot tell" rather than
+            # asserting a failure we cannot evidence.
+            continue
+    return False
 
 
 def build_graph(

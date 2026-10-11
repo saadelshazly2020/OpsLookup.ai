@@ -1,59 +1,210 @@
-:root {
-  --bg: #f5f6f8;
-  --surface: #ffffff;
-  --agent-bubble: #ffffff;
-  --border: #dfe3e8;
-  --text: #1b1f24;
-  --muted: #6b7480;
-  --accent: #2c5fd6;
-  --accent-soft: #e8eefb;
-  --error: #b3261e;
-  --error-soft: #fdecea;
-  --radius: 10px;
+@import 'tailwindcss';
+
+/*
+  Tailwind v4 is configured in CSS, not tailwind.config.js. Everything below
+  `@theme` becomes a real design token: `bg-surface`, `text-muted`,
+  `border-border`, and so on. That replaces the old `--var` custom properties
+  one-for-one, so the palette in use has not changed — only how it is applied.
+*/
+@theme {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-raised: #fbfcfd;
+  --color-agent-bubble: #ffffff;
+  --color-line: #e2e6eb;
+  --color-ink: #16191d;
+  --color-muted: #667085;
+
+  --color-accent: #2c5fd6;
+  --color-accent-hover: #2450b8;
+  --color-accent-soft: #e8eefb;
+  --color-accent-ring: #2c5fd633;
+
+  --color-danger: #b3261e;
+  --color-danger-soft: #fdecea;
+  --color-danger-line: #f3c6c2;
+
+  --color-ok: #067647;
+  --color-ok-soft: #e7f6ee;
+
+  --radius-card: 14px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171a;
-    --surface: #1c2024;
-    --agent-bubble: #23282e;
-    --border: #2e343b;
-    --text: #e6e9ec;
-    --muted: #9aa4b0;
-    --accent: #6c9bff;
-    --accent-soft: #1e2a44;
-    --error: #ff8a80;
-    --error-soft: #3a1f1d;
+/*
+  Follows the OS setting unless the member has chosen otherwise (see
+  `useTheme.ts`, which puts `.dark` on <html>). Written as a custom variant
+  rather than `dark:` on every class, so the markup stays readable.
+
+  The theme colours below are also re-declared under `.dark`, so anything driven
+  by a token — `bg-canvas`, `text-ink`, `border-line` — flips without needing a
+  `dark:` variant of its own. Utilities without an explicit `dark:` still work;
+  these just save repeating it.
+*/
+@custom-variant dark (&:where(.dark, .dark *));
+
+.dark {
+  --color-canvas: #0f1215;
+  --color-surface: #171b20;
+  --color-raised: #1c2127;
+  --color-agent-bubble: #1e242b;
+  --color-line: #2b323b;
+  --color-ink: #e7eaee;
+  --color-muted: #98a2b3;
+
+  --color-accent: #7aa2ff;
+  --color-accent-hover: #93b4ff;
+  --color-accent-soft: #1b2540;
+  --color-accent-ring: #7aa2ff40;
+
+  --color-danger: #ff9b93;
+  --color-danger-soft: #2f1a19;
+  --color-danger-line: #5a2b28;
+
+  --color-ok: #6ce9a6;
+  --color-ok-soft: #10281d;
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    /*
+      Required by the `h-full` on the app shell. Without it the header and
+      footer collapse to their content height and the conversation area never
+      scrolls — the page just grows and leaves dead space below.
+    */
+    height: 100%;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-family:
+      'Inter var', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica,
+      Arial, sans-serif;
+  }
+
+  /*
+    A single visible focus ring for everything. Buttons and inputs each opt out
+    of their own outline so this is the only one the keyboard user sees.
+  */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
   }
 }
 
-* {
-  box-sizing: border-box;
+@layer components {
+  /*
+    Agent replies are markdown: tables, bold, numbered lists. These rules style
+    the elements `marked` produces so a table looks like a table instead of a
+    row of pipe characters.
+  */
+  .prose-agent {
+    @apply text-[0.9375rem] leading-relaxed;
+  }
+
+  .prose-agent > * + * {
+    @apply mt-3;
+  }
+
+  .prose-agent h1,
+  .prose-agent h2,
+  .prose-agent h3 {
+    @apply mt-4 text-base font-semibold tracking-tight;
+  }
+
+  .prose-agent strong {
+    @apply font-semibold text-ink dark:text-ink;
+  }
+
+  .prose-agent em {
+    @apply italic;
+  }
+
+  .prose-agent ul {
+    @apply list-disc space-y-1.5 pl-5;
+  }
+
+  .prose-agent ol {
+    @apply list-decimal space-y-1.5 pl-5;
+  }
+
+  .prose-agent a {
+    @apply font-medium text-accent underline underline-offset-2;
+  }
+
+  .prose-agent code {
+    @apply rounded bg-canvas px-1.5 py-0.5 font-mono text-[0.8125rem] text-accent;
+  }
+
+  .prose-agent pre {
+    @apply overflow-x-auto rounded-card border border-line bg-canvas p-3;
+  }
+
+  .prose-agent pre code {
+    @apply bg-transparent p-0 text-ink;
+  }
+
+  .prose-agent blockquote {
+    @apply border-l-2 border-line pl-3 text-muted;
+  }
+
+  .prose-agent hr {
+    @apply border-line;
+  }
+
+  /*
+    Tables are the reason the markdown parser exists. On a narrow screen they
+    scroll sideways rather than crushing the columns.
+  */
+  .prose-agent table {
+    @apply block w-full overflow-x-auto border-collapse text-sm;
+  }
+
+  .prose-agent thead {
+    @apply border-b border-line;
+  }
+
+  .prose-agent th {
+    @apply whitespace-nowrap px-3 py-2 text-left font-semibold text-muted;
+  }
+
+  .prose-agent td {
+    @apply whitespace-nowrap border-t border-line px-3 py-2 align-top;
+  }
+
+  .prose-agent tbody tr:first-child td {
+    @apply border-t-0;
+  }
+
+  /*
+    `marked` wraps every loose paragraph in <p>, but a single-line reply has no
+    blank lines, so the first and last child pick up stray margin. Collapse it
+    so a one-line answer is vertically centred like a sentence, not a block.
+  */
+  .prose-agent > :first-child {
+    @apply mt-0;
+  }
+
+  .prose-agent > :last-child {
+    @apply mb-0;
+  }
 }
 
-html,
-body,
-#app {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font:
-    15px/1.55 system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  display: flex;
-  flex-direction: column;
-}
-
-.sr-only {
-  position: absolute;
-  left: -9999px;
+/* Respect the OS "reduce motion" setting rather than animating regardless. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
