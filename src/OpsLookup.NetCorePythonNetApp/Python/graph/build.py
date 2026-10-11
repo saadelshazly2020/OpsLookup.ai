@@ -19,7 +19,11 @@ from langgraph.prebuilt import ToolNode
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a support assistant for IT operations staff.
+SOCIAL_ID_RULE = "10 digits starting with 1 or 2"
+ATTORNEY_STATUSES = "approved or faked"
+DEFAULT_LOCALE = "ar"
+
+SYSTEM_PROMPT_EN = """You are a support assistant for IT operations staff.
 
 They are not technical. Describe what you found in plain language, not jargon,
 and keep answers short.
@@ -38,7 +42,49 @@ How to work:
 - If a tool returns an error, report what went wrong rather than retrying
   repeatedly.
 - Report only what the tools returned. Do not add details they did not give you.
-""".format(rule="10 digits starting with 1 or 2", statuses="approved or faked")
+"""
+
+# Arabic version of the same rules. The tool contract is identical; only the
+# language of the answer changes. Kept deliberately in step with
+# SYSTEM_PROMPT_EN -- if you add a rule to one, add it to the other, or members
+# get different behaviour depending on which language they picked.
+SYSTEM_PROMPT_AR = """أنت مساعد دعم لفريق تشغيل تقنية المعلومات.
+
+الموظفون ليسوا متخصصين. اشرح ما وجدته بلغة بسيطة بعيدة عن المصطلحات،
+واجعل إجاباتك قصيرة.
+
+كيف تعمل:
+- استخدم get_contract عندما يسأل الموظف عن عقود أحد العملاء.
+- استخدم get_attorney عندما يسأل الموظف من يمثّل أحد العملاء، أو هل المحامي
+  معتمد. تبحث الأداة بالرقم الاجتماعي أو باسم العميل أو بكليهما.
+- الرقم الاجتماعي {rule}. إذا لم يعطك الموظف رقمًا، أو أعطاك رقمًا لا يطابق
+  هذه القاعدة، اطلب منه الرقم بوضوح بدل استدعاء الأداة. لا تخترع رقمًا ولا
+  تخمّن أي رقم.
+- حالة المحامي {statuses}. اذكر الحالة كما أعادتها الأداة تمامًا، ووضّح معناها:
+  "approved" تعني أن المحامي معتمد ومصرّح له بالتصرف، و"faked" تعني أنه مُطعن
+  فيه بالاحتيال. لا تخفّف العبارة ولا تغيّرها.
+- النتيجة الفارغة تعني أنه لا يوجد محامٍ مسجّل لهذا العميل. قل ذلك مباشرة.
+- إذا أرجعت الأداة خطأ، فاشرح ما حدث بدل إعادة المحاولة مرارًا.
+- اذكر ما أعادته الأدوات فقط، ولا تضف تفاصيل لم تعطك إياها.
+- اكتب الأرقام بالصيغة اللاتينية مثل 1234567890 وليس بالأرقام العربية الهندية،
+  فالرقم الاجتماعي بيانات ويجب أن يُقرأ بدقة.
+
+الأسماء وعقود العملاء وحالات المحامين بيانات قادمة من قاعدة البيانات، فاتركها
+كما أعادتها الأداة تمامًا؛ فترجمتها أو نقلها إلى حروف أخرى يجعل الإجابة غير
+صحيحة.
+"""
+
+SYSTEM_PROMPTS = {"en": SYSTEM_PROMPT_EN, "ar": SYSTEM_PROMPT_AR}
+
+
+def system_prompt(locale: str | None) -> str:
+    """Prompt for `locale`, falling back to the default rather than raising.
+
+    An unknown locale must not fail a turn: a missing or malformed value from
+    an older client should still produce an answer.
+    """
+    chosen = SYSTEM_PROMPTS.get((locale or "").lower(), SYSTEM_PROMPTS[DEFAULT_LOCALE])
+    return chosen.format(rule=SOCIAL_ID_RULE, statuses=ATTORNEY_STATUSES)
 
 
 class TicketState(MessagesState):
@@ -46,6 +92,9 @@ class TicketState(MessagesState):
 
     ticket_id: str
     operator_id: str
+    # Drives which system prompt the turn answers under. Defaults to the
+    # process-wide default when a caller does not set it.
+    locale: str = DEFAULT_LOCALE
 
 
 def route_after_llm(state: TicketState) -> str:
@@ -102,7 +151,11 @@ def build_graph(
     """
 
     async def llm_node(state: TicketState) -> dict:
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
+        # Built per call, not once at compile time: the locale arrives in the
+        # turn's state and can differ between turns on the same thread, so a
+        # prompt captured in the closure would be frozen to the first one.
+        prompt = system_prompt(state.get("locale"))
+        messages = [SystemMessage(content=prompt), *state["messages"]]
         reply = await llm.ainvoke(messages)
         return {"messages": [reply]}
 

@@ -56,7 +56,8 @@ app.MapPost("/api/chat", async (
         var outcome = await bridge.ChatAsync(
             request.TicketId,
             request.Message,
-            request.OperatorId);
+            request.OperatorId,
+            request.Locale);
 
         return outcome.Error
             ? Results.Json(outcome, statusCode: StatusCodes.Status502BadGateway)
@@ -84,7 +85,13 @@ app.Run();
 public sealed record ChatRequest(
     string TicketId,
     string Message,
-    string? OperatorId);
+    string? OperatorId,
+    /// <summary>
+    /// Page language: "ar" or "en". Selects the agent's system prompt so the
+    /// answer comes back in the language the member is reading. Null or
+    /// unrecognised values fall back to Arabic rather than failing the turn.
+    /// </summary>
+    string? Locale);
 
 /// <summary>Initialises Python and blocks until the graph is ready.</summary>
 internal sealed class PythonWarmup(PythonBridge bridge) : IHostedService

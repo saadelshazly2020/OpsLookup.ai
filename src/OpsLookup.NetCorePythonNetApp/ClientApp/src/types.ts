@@ -11,6 +11,16 @@ export interface ChatReply {
   lookupFailed?: boolean
 }
 
+/**
+ * Body posted to /api/chat. `locale` selects the system prompt the agent
+ * answers under, so the reply language matches the page.
+ */
+export interface ChatRequest {
+  ticketId: string
+  message: string
+  locale?: 'ar' | 'en'
+}
+
 /** Body the ASP.NET Core host returns when the graph itself failed. */
 export interface ChatFailure {
   detail: string

@@ -151,7 +151,12 @@ def _checkpoint_path(settings: Any) -> str:
 
 
 # ---------------------------------------------------------------------- one turn
-async def _run_turn(thread_id: str, message: str, operator_id: str) -> dict:
+async def _run_turn(
+    thread_id: str,
+    message: str,
+    operator_id: str,
+    locale: str = "",
+) -> dict:
     async with AsyncExitStack() as stack:
         settings = load_settings()
 
@@ -178,6 +183,9 @@ async def _run_turn(thread_id: str, message: str, operator_id: str) -> dict:
                 "messages": [("user", message)],
                 "ticket_id": thread_id,
                 "operator_id": operator_id or settings.operator_id,
+                # Selects the system prompt, so the reply comes back in the same
+                # language the page is showing.
+                "locale": locale,
             },
             {
                 "configurable": {"thread_id": thread_id},
@@ -197,20 +205,30 @@ async def _run_turn(thread_id: str, message: str, operator_id: str) -> dict:
         }
 
 
-def run_turn(thread_id: str, message: str, operator_id: str = "") -> str:
+def run_turn(
+    thread_id: str,
+    message: str,
+    operator_id: str = "",
+    locale: str = "",
+) -> str:
     """Run one turn and return the outcome as a JSON string.
 
     Blocking. The GIL must be held by the caller, and it is held for the whole
     call -- that is safe because socket waits release it, which is what allows
     a second request to make progress at the same time.
+
+    `locale` picks the system prompt, so the answer comes back in the language
+    the page is showing. Defaults to Arabic when empty or unrecognised.
     """
     failure = warmup()
     if failure:
         return json.dumps({"error": failure})
 
-    _log(f"turn begin: thread={thread_id} msg={message[:60]!r}")
+    _log(f"turn begin: thread={thread_id} locale={locale or '(default)'} msg={message[:60]!r}")
     try:
-        payload = _get_loop().run_until_complete(_run_turn(thread_id, message, operator_id))
+        payload = _get_loop().run_until_complete(
+            _run_turn(thread_id, message, operator_id, locale)
+        )
     except Exception as exc:  # noqa: BLE001 - reported back to the caller
         _log(f"turn failed: {type(exc).__name__}: {exc}")
         _log(traceback.format_exc())

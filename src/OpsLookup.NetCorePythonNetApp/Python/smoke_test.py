@@ -20,7 +20,14 @@ import sys
 
 from dotenv import load_dotenv
 
-from graph.build import any_tool_error, build_graph, route_after_llm
+from graph.build import (
+    ATTORNEY_STATUSES,
+    SOCIAL_ID_RULE,
+    any_tool_error,
+    build_graph,
+    route_after_llm,
+    system_prompt,
+)
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END
@@ -183,6 +190,24 @@ async def main() -> int:
         "unparseable tool output is not asserted as a failure",
         not any_tool_error([HumanMessage("q"), ToolMessage(content="not json", tool_call_id="c")]),
     )
+
+    # --- 4c. locale selects the system prompt --------------------------------
+    # The page language has to reach the model, or members read an Arabic UI
+    # beside an English answer.
+    print("4c. system_prompt by locale")
+    ar = system_prompt("ar")
+    en = system_prompt("en")
+    check("ar and en differ", ar != en)
+    check("arabic prompt is arabic", any("\u0600" <= c <= "\u06ff" for c in ar))
+    check("english prompt is english", "support assistant" in en.lower())
+    check("unknown locale falls back, not raises", system_prompt("fr") == ar)
+    check("none falls back", system_prompt(None) == ar)
+    check("empty falls back", system_prompt("") == ar)
+    check("case insensitive", system_prompt("AR") == ar)
+    for name, prompt in (("ar", ar), ("en", en)):
+        check(f"{name}: placeholders substituted", "{" not in prompt and "}" not in prompt)
+        check(f"{name}: social ID rule injected", SOCIAL_ID_RULE in prompt)
+        check(f"{name}: attorney statuses injected", ATTORNEY_STATUSES in prompt)
 
     # --- 5. attorney tool ----------------------------------------------------
     print("5. attorney by social ID")

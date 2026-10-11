@@ -428,9 +428,9 @@ tool_calls = sum(len(getattr(m, "tool_calls", []) or []) for m in messages)
 
 | # | Boundary | Shape |
 |---|---|---|
-| 1 | Browser → .NET | `{ ticketId, message }` |
-| 2 | .NET → Python | `run_turn(ticketId: str, message: str, operatorId: str) -> str` |
-| 3 | Python → model | messages + both tool schemas |
+| 1 | Browser → .NET | `{ ticketId, message, locale }` |
+| 2 | .NET → Python | `run_turn(ticketId: str, message: str, operatorId: str, locale: str) -> str` |
+| 3 | Python → model | messages + both tool schemas, under the locale's system prompt |
 | 4 | Tool → .NET API | `GET /api/contracts?socialId=&name=` or `GET /api/attorneys?socialId=&partyName=`, + `Bearer` |
 | 5 | .NET API → Python | contracts: `[{ contractCode, socialId, partyName, contractName }]` · attorneys: `[{ attorneyId, attorneyName, status, partyId, partyName, socialId }]` |
 | 6 | Python → .NET | `{ threadId, reply, toolCalls, lookupFailed }` or `{ error }` |
@@ -449,6 +449,13 @@ invocations, not successes — an expired `API_TOKEN` still produces 1. Both too
 failures as `{"error": ...}` text rather than raising, so `graph/build.py::any_tool_error`
 parses them back out of the transcript and the page badges the answer red instead of
 green.
+
+`locale` is what keeps the page from reading as two languages at once. It is chosen in
+the browser, carried on the request, threaded through the bridge into
+`graph.build.system_prompt()`, and used to pick `SYSTEM_PROMPT_AR` or
+`SYSTEM_PROMPT_EN`. The prompt is built **inside** the `llm` node, not captured when the
+graph is compiled — a turn's locale arrives in that turn's state and can differ between
+turns on the same thread.
 
 ---
 

@@ -86,9 +86,26 @@
 
   body {
     @apply bg-canvas text-ink antialiased;
+    /*
+      No webfont is loaded — the page is built to run on an isolated network
+      with no external requests. The Arabic-capable fonts in this stack ship
+      with Windows and macOS, so Arabic renders without a download. Segoe UI is
+      first because it covers Arabic and Latin on Windows; Tahoma is the
+      long-standing fallback; Noto Sans Arabic is the best option where the
+      user has installed it.
+    */
     font-family:
-      'Inter var', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica,
-      Arial, sans-serif;
+      'Segoe UI', 'Noto Sans Arabic', Tahoma, 'Dubai', system-ui, -apple-system,
+      'Helvetica Neue', Arial, sans-serif;
+  }
+
+  /*
+    Arabic script needs more line height than Latin at the same size, or
+    ascenders and descenders collide. `html[lang='ar']` rather than a class so
+    it follows the document language rather than depending on `dir`.
+  */
+  html[lang='ar'] body {
+    line-height: 1.75;
   }
 
   /*
@@ -97,6 +114,14 @@
   */
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-accent;
+  }
+
+  /*
+    Directional icons (the send arrow) point the wrong way once `dir="rtl"` is
+    set. Opt in per icon rather than flipping the whole page.
+  */
+  html[dir='rtl'] .rtl-flip {
+    transform: scaleX(-1);
   }
 }
 

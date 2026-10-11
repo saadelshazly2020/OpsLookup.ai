@@ -297,6 +297,8 @@ Every one of these failed silently or misleadingly. Worth remembering.
 | Header and footer float with dead space below | Replacing `main.css` dropped `html, body, #app { height: 100% }`, which the shell's `h-full` depends on | Restore it in `@layer base` |
 | Theme toggle appears dead in a test | Vue watchers flush on the next tick; reading `localStorage` synchronously right after `.click()` shows the old value | `await` a tick before asserting. `aria-pressed` updates immediately and proves the click landed |
 | A good answer is badged red | `any_tool_error` scanned the whole transcript, but the checkpointer replays the entire thread, so a failure from an earlier turn poisoned later turns | Scan only messages after the last `HumanMessage` |
+| `SyntaxError: Unexpected token '﻿'` building the client | PowerShell `Set-Content -Encoding UTF8` writes a **BOM**, and Node's JSON loader rejects it | Write with `[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($false)))` |
+| Arabic crashes a test run with `UnicodeEncodeError: 'charmap'` | Console is cp1252 and cannot print Arabic. Not an application fault | Set `PYTHONIOENCODING=utf-8`. `host.py::_log` already opens `progress.log` with `encoding="utf-8"`, so real log writes are safe |
 
 ### Front end
 
@@ -312,6 +314,30 @@ Two things that are load-bearing rather than decorative:
   text. Without DOMPurify a contract name could run script in the operator's browser.
 - **The badge has three states.** See the badge section in `README.md`; collapsing
   "lookup failed" into "looked up N times" is the easy regression to reintroduce.
+
+### Arabic and RTL
+
+The page is Arabic by default with an Arabic/English switch. `useI18n.ts` owns the
+locale and sets `lang` and `dir` on `<html>`; Tailwind's logical utilities (`ps-`,
+`pe-`, `me-`, `text-start`) key off `dir`, so components carry no direction-specific
+branches. An inline script in `index.html` applies `dir` before first paint — otherwise
+an Arabic user gets a visible left-to-right flash before it flips.
+
+Decisions worth keeping:
+
+| Decision | Reason |
+|---|---|
+| Replies follow the selected language | An Arabic UI beside an English answer is two languages at once. The locale is carried on the request into `system_prompt()`. |
+| System prompt selected per **turn**, not per graph | The locale lives in turn state, so two turns on one thread can differ. Capturing it in the compiled closure would freeze the first turn's language. |
+| Unknown locale falls back to Arabic | An older client sending no `locale` must still get an answer, not a 422. |
+| Western digits in Arabic | Business users in Egypt and the Gulf read Latin digits, and a social ID is data — rendering Arabic-Indic numerals would make the number wrong. |
+| Arabic gets `line-height: 1.75` | Arabic ascenders and descenders collide at Latin line heights. |
+| No Arabic webfont | The page is built to run on an isolated network with no external requests. The font stack uses fonts that ship with Windows and macOS. |
+| Arabic has separate singular/plural badge strings | `مرة واحدة` is not `"time" + (n === 1 ? '' : 's')`. The English plural trick produces nonsense in Arabic. |
+
+Enter-to-send guards on `event.isComposing`. An Arabic IME fires `keydown` while the
+word is still being composed, and Enter there means "confirm", not "send" — without the
+guard, sending mid-word is routine rather than rare.
 
 ### LongCat
 

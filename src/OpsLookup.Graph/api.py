@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
             await client.aclose()
 
 
-app = FastAPI(title="OpsLookup Graph", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Ticketing AI Assistant", version="0.1.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -79,6 +79,11 @@ class ChatRequest(BaseModel):
     )
     message: str = Field(description="The operations member's message, in plain language.")
     operator_id: str | None = Field(default=None, description="Overrides the configured operator.")
+    # "ar" or "en". Picks the system prompt so the answer comes back in the
+    # member's language. Unknown values fall back to Arabic rather than 422.
+    locale: str | None = Field(
+        default=None, description="Page language: 'ar' or 'en'. Defaults to Arabic."
+    )
 
 
 class ChatResponse(BaseModel):
@@ -119,6 +124,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                 "messages": [("user", payload.message)],
                 "ticket_id": payload.ticket_id,
                 "operator_id": payload.operator_id or settings.operator_id,
+                "locale": payload.locale or "",
             },
             config,
         )

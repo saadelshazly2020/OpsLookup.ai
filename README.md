@@ -1,4 +1,4 @@
-# Operation RAG
+# Ticketing AI Assistant
 
 An agent that lets non-technical IT operations staff resolve ticket lookups in plain
 language, instead of escalating to a developer.
@@ -152,6 +152,31 @@ origin as the API, so there is no CORS setup.
 | Example prompts on the empty state | The audience is non-technical; it shows what to type |
 | Enter sends, Shift+Enter newlines | |
 | Dark mode, `aria-live` log | |
+
+## Language
+
+Arabic by default, with an Arabic/English switch in the header. Choosing a language
+flips `dir` on `<html>`, so the whole layout mirrors to RTL — Tailwind's logical
+utilities (`ps-`, `me-`, `text-start`) handle it, so the components carry no
+direction-specific branches.
+
+**The agent answers in the selected language.** The page passes `locale` on
+`/api/chat`, and `graph/build.py::system_prompt()` picks `SYSTEM_PROMPT_AR` or
+`SYSTEM_PROMPT_EN` from it. Without that you get an Arabic page beside an English
+answer.
+
+Two things stay untranslated on purpose:
+
+- **Social IDs and contract codes**, always in Western digits (`1234567890`). Arabic
+  business users read Latin digits, and a social ID is data — Arabic-Indic numerals
+  would make the number wrong.
+- **Names and statuses from the database**, left exactly as the tool returned them.
+  `faked` stays `faked`, with the Arabic meaning explained next to it. Translating or
+  transliterating data makes the answer wrong.
+
+The system prompts are two separate strings, deliberately kept in step. If you add a
+rule to one, add it to the other or members get different behaviour depending on which
+language they picked.
 
 ### The lookup badge
 

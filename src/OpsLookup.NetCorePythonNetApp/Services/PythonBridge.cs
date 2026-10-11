@@ -335,16 +335,20 @@ public sealed class PythonBridge : IAsyncDisposable
     public Task<ChatOutcome> ChatAsync(
         string ticketId,
         string message,
-        string? operatorId)
+        string? operatorId,
+        string? locale)
     {
         if (!IsReady)
         {
             throw new InvalidOperationException(StartupError ?? "Python host is not ready");
         }
 
+        // `locale` selects the system prompt so the reply matches the page.
+        // Empty is safe: host.run_turn defaults it rather than failing the turn.
         return RunAsync(() => ParseOutcome(
             ticketId,
-            InvokeString(_runTurn!, ticketId, message, operatorId ?? string.Empty)));
+            InvokeString(
+                _runTurn!, ticketId, message, operatorId ?? string.Empty, locale ?? string.Empty)));
     }
 
     private static ChatOutcome ParseOutcome(string ticketId, string payload)

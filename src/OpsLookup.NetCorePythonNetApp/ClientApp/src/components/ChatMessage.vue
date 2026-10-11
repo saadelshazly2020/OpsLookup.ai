@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { useI18n } from '../composables/useI18n'
 import { renderMarkdown } from '../services/markdown'
 import type { Message } from '../types'
 
 const props = defineProps<{ message: Message }>()
+
+const { t, number } = useI18n()
 
 const isAgent = computed(() => props.message.role === 'agent')
 
@@ -19,30 +22,24 @@ const html = computed(() => (isAgent.value ? renderMarkdown(props.message.text) 
 */
 const badge = computed(() => {
   if (props.message.lookupFailed) {
-    return {
-      tone: 'fail',
-      icon: 'alert' as const,
-      text: 'Lookup failed — not verified',
-      title: 'A tool ran but could not reach the data. Nothing was read from the database.',
-    }
+    return { tone: 'fail', icon: 'alert' as const, text: t.value.badgeFailed, title: t.value.badgeFailedTitle }
   }
 
   if (props.message.toolCalls > 0) {
-    const n = props.message.toolCalls
     return {
       tone: 'ok',
       icon: 'database' as const,
-      text: `Looked up ${n} time${n === 1 ? '' : 's'} in the database`,
-      title: 'This answer was read from the database.',
+      // Arabic has singular and plural, so the two forms are separate strings
+      // rather than the "time{{n === 1 ? '' : 's'}}" trick used in English.
+      text:
+        props.message.toolCalls === 1
+          ? t.value.badgeOkOnce
+          : t.value.badgeOk.replace('{n}', number(props.message.toolCalls)),
+      title: t.value.badgeOkTitle,
     }
   }
 
-  return {
-    tone: 'none',
-    icon: 'alert' as const,
-    text: 'Not checked against the database',
-    title: 'No database lookup was made, so this answer was not verified.',
-  }
+  return { tone: 'none', icon: 'alert' as const, text: t.value.badgeNone, title: t.value.badgeNoneTitle }
 })
 
 const badgeClass: Record<string, string> = {
@@ -50,24 +47,27 @@ const badgeClass: Record<string, string> = {
   fail: 'bg-danger-soft text-danger',
   none: 'bg-[#fef3e2] text-[#b54708] dark:bg-[#2e2413] dark:text-[#f5b74e]',
 }
+
+const speaker = computed(() =>
+  props.message.role === 'member'
+    ? t.value.you
+    : props.message.isError
+      ? t.value.problem
+      : t.value.agent,
+)
 </script>
 
 <template>
   <div
     class="flex w-full flex-col"
-    :class="[
-      message.role === 'member' ? 'items-end' : 'items-start',
-      message.role === 'member' ? 'pl-8 sm:pl-24' : 'pr-8 sm:pr-24',
-    ]"
+    :class="
+      message.role === 'member' ? 'items-end ps-8 sm:ps-24' : 'items-start pe-8 sm:pe-24'
+    "
   >
+    <!-- Logical `ms-*`, so the icon sits on the correct side in both directions. -->
     <div class="mb-1.5 flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wide text-muted">
-      <AppIcon
-        :name="isAgent ? 'sparkle' : 'user'"
-        class="size-3.5"
-      />
-      <span>
-        {{ message.role === 'member' ? 'You' : message.isError ? 'Problem' : 'OpsLookup' }}
-      </span>
+      <AppIcon :name="isAgent ? 'sparkle' : 'user'" class="size-3.5 shrink-0" />
+      <span>{{ speaker }}</span>
     </div>
 
     <!--

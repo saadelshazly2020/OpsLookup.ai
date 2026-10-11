@@ -1,27 +1,32 @@
 <!doctype html>
-<html lang="en">
+<html lang="ar" dir="rtl">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232c5fd6'/><path d='M8 10.5A2.5 2.5 0 0 1 10.5 8h11A2.5 2.5 0 0 1 24 10.5v8a2.5 2.5 0 0 1-2.5 2.5H14l-5 4v-4h-.5A2.5 2.5 0 0 1 6 18.5v-8A2.5 2.5 0 0 1 8 10.5Z' fill='white'/></svg>" />
-    <title>OpsLookup Agent</title>
+    <title>Ticketing AI Assistant</title>
 
     <script>
       /*
-        Applied before first paint. Without this the page renders light, then Vue
-        mounts and flips to dark, which reads as a flash on every load. Must stay
-        in sync with `useTheme.ts`: same storage key, same precedence.
+        Applied before first paint. Without this the page renders in the wrong
+        language and the wrong direction, then Vue corrects it on mount — which
+        for Arabic means a visible left-to-right flash before flipping to RTL.
+        Must stay in sync with `useI18n.ts` and `useTheme.ts`: same storage keys,
+        same precedence, same defaults (Arabic, and the OS theme).
       */
       (function () {
         try {
-          var stored = localStorage.getItem('opslookup.netcore.theme')
+          var theme = localStorage.getItem('opslookup.netcore.theme')
           var dark =
-            stored === 'dark' ||
-            (stored !== 'light' &&
+            theme === 'dark' ||
+            (theme !== 'light' &&
               window.matchMedia('(prefers-color-scheme: dark)').matches)
           if (dark) document.documentElement.classList.add('dark')
+
+          var locale = localStorage.getItem('opslookup.netcore.locale')
+          if (locale !== 'en') document.documentElement.dir = 'rtl'
         } catch (e) {
-          /* Private mode can throw on localStorage; the OS default is fine. */
+          /* Private mode can throw on localStorage; the defaults are fine. */
         }
       })()
     </script>
