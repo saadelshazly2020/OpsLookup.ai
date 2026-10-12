@@ -264,6 +264,27 @@ every answer becomes a guess. `toolCalls: 0` in a `/chat` response is the signal
 
 ## Tests
 
+### `Python Workflow.ipynb` — the workflow, step by step
+
+A walkthrough of the agent in 12 steps using **your real model and credentials** —
+nothing mocked. Config and credentials → API client → tools → a direct data lookup
+with no model involved → the model → the graph → a real turn → reading the message
+trace → the turn contract → Arabic → multi-turn context → the three failure modes →
+the recursion ceiling.
+
+What makes it more than a demo is that it shows the *mechanics*, not just an answer:
+the trace table exposes which tool was called with which arguments, the turn-contract
+cell demonstrates that a failed tool call still counts as a call, and the failure-mode
+cell proves the agent asks for a social ID instead of inventing one.
+
+```powershell
+cd src\OpsLookup.Graph
+code "Python Workflow.ipynb"      # kernel: opslookup (Python 3.14)
+```
+
+Needs `OpsLookup.Api` running on 5250 and a `LONGCAT_API_KEY` in `.env`. Takes about a
+minute — roughly six live model calls.
+
 ### `Check API.ipynb` — 23 checks, end to end
 
 Covers the .NET API (auth, lookup, name filter, social ID validation, 401) and the

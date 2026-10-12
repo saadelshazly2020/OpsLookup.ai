@@ -31,10 +31,17 @@ Fastest way to verify everything still works without a model:
 ```powershell
 .\.venv\Scripts\python.exe smoke_test.py     # headless, 20 assertions
 code "Check API.ipynb"                        # 23 checks, select the opslookup kernel
+code "Python Workflow.ipynb"                  # step-by-step walkthrough, real model
 ```
 
 The smoke test is the one that covers the attorney tool. The notebook has not been
 extended for it — it still exercises contracts only.
+
+`Python Workflow.ipynb` is the teaching artifact: it runs the real model and shows the
+message trace, the `toolCalls` / `lookupFailed` contract, and the failure modes. Two
+things it gets right that are easy to get wrong elsewhere — it uses top-level `await`
+rather than `asyncio.run()` (Jupyter already owns the loop), and it mints its own
+service token from `/auth/dev-token` so a 60-minute expiry cannot break it.
 
 ---
 
