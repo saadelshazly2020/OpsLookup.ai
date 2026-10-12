@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OpsLookup.Api/AI.TicketingAssistant.Api.csproj" />
+    <Project Path="src/OpsLookup.NetCorePythonNetApp/AI.TicketingAssistant.PythonNetApp.csproj" />
+  </Folder>
+</Solution>

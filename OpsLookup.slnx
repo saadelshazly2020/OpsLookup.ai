@@ -1,6 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/OpsLookup.Api/OpsLookup.Api.csproj" />
-    <Project Path="src/OpsLookup.NetCorePythonNetApp/OpsLookup.NetCorePythonNetApp.csproj" />
-  </Folder>
-</Solution>
