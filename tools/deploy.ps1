@@ -77,13 +77,6 @@ function Get-SqlCmd {
     throw "sqlcmd.exe not found. Install the SQL Server Command Line Utilities."
 }
 
-function Get-RandomSecret([int]$Length = 48) {
-    # Alphanumeric only. Deliberately excludes quotes, backslashes and other
-    # characters that are awkward in JSON, XML and SQL string literals.
-    $alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-    -join (1..$Length | ForEach-Object { $alphabet[[int](Get-Random -Maximum $alphabet.Length)] })
-}
-
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $Utf8NoBom)
 }
@@ -186,18 +179,19 @@ if (-not $SigningKey) {
     if ($SigningKey) { Write-Ok "reusing the signing key already in the app pool" }
 }
 
+# The project owns its own configuration now: appsettings.Production.json is
+# source-controlled and published, and the csproj strips appsettings.json and
+# appsettings.Development.json from the publish output. So the deployed file is
+# read to learn what is already in force -- a redeploy must not change it -- but
+# nothing here writes it.
 if (-not $SigningKey) {
     $SigningKey = Get-ExistingSecret "$ApiSitePath\appsettings.Production.json" "Jwt.SigningKey"
 }
-if (-not $SigningKey) {
-    $SigningKey = Get-ExistingSecret "$ApiSitePath\appsettings.json" "Jwt.SigningKey"
-}
-if (-not $SigningKey -or $SigningKey.Length -lt 32) {
-    if ($SigningKey) { Write-Warn "existing signing key too short, generating a new one" }
-    $SigningKey = Get-RandomSecret 64
-    Write-Ok "generated a new signing key"
+if ($SigningKey) {
+    Write-Ok "using the signing key from appsettings.Production.json (not modified)"
 } else {
-    Write-Ok "reusing the existing signing key"
+    Write-Warn "no SigningKey in appsettings.Production.json and no app-pool variable."
+    Write-Warn "Production refuses to start without one of at least 32 characters."
 }
 
 if (-not $ServiceSecret) {
@@ -206,7 +200,7 @@ if (-not $ServiceSecret) {
     $fromPool = Get-AppPoolSecret $ApiAppPool "Jwt__ServiceSecret"
     if ($fromApi -and $fromAgent -and $fromApi -eq $fromAgent) { $ServiceSecret = $fromApi }
     elseif ($fromApi -or $fromAgent) {
-        throw "The two applications have different service secrets. Pass -ServiceSecret to set one explicitly, or -Force to replace both."
+        throw "The two applications have different service secrets. They must match, or every /api/chat turn fails with 401. Fix appsettings.Production.json in both projects."
     }
     elseif ($fromPool) {
         $ServiceSecret = $fromPool
@@ -214,14 +208,11 @@ if (-not $ServiceSecret) {
     }
 }
 if (-not $ServiceSecret) {
-    $ServiceSecret = Get-RandomSecret 48
-    Write-Ok "generated a new service secret"
-} else {
-    Write-Ok "service secret resolved"
+    Write-Warn "no ServiceSecret found in appsettings.Production.json or the app pool"
+    Write-Warn "  POST /auth/service-token will answer 401 and every chat turn will fail."
 }
-
-if ($SigningKey.Length -lt 32) {
-    throw "SigningKey must be at least 32 characters (got $($SigningKey.Length))."
+if ($ServiceSecret) {
+    Write-Ok "service secret resolved (not modified)"
 }
 
 # ------------------------------------------------------------- 3. database
@@ -371,9 +362,15 @@ if (-not $SkipPublish) {
     Start-Sleep -Seconds 5
 
     try {
+        # Publish through the project's own FolderProfile. It carries
+        # DeleteExistingFiles=false and EnvironmentName=Production, and it decides
+        # the destination -- passing -o instead silently overrides the profile and
+        # re-enables the wipe that destroys appsettings, .env and the rest of the
+        # site on every deploy. Extra properties can be added alongside it; the
+        # profile still wins on the ones it sets.
         Write-Host "    API..."
         $apiOutput = & dotnet publish (Join-Path $script:RepoRoot "src\OpsLookup.Api\AI.TicketingAssistant.Api.csproj") `
-            -c Release -o $ApiSitePath -v q --nologo 2>&1
+            -p:PublishProfile=FolderProfile -v q --nologo 2>&1
         if ($LASTEXITCODE -ne 0) {
             # The build output is not discarded on failure. A publish that fails
             # with "publishing failed" and no reason is the worst possible outcome.
@@ -381,9 +378,12 @@ if (-not $SkipPublish) {
         }
         Write-Ok "API published"
 
+        # IncludePythonVenv is not in the profile because it is specific to this
+        # machine: a virtual environment is not relocatable, so the output only
+        # works on a host with the identical base Python install.
         Write-Host "    agent (includes the Python environment)..."
         $agentOutput = & dotnet publish (Join-Path $script:RepoRoot "src\OpsLookup.NetCorePythonNetApp\AI.TicketingAssistant.PythonNetApp.csproj") `
-            -c Release -o $AgentSitePath -p:IncludePythonVenv=true -v q --nologo 2>&1
+            -p:PublishProfile=FolderProfile -p:IncludePythonVenv=true -v q --nologo 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "publishing the agent failed:`n$((($agentOutput | Select-Object -Last 12) -join "`n"))"
         }
@@ -399,17 +399,36 @@ if (-not $SkipPublish) {
     Write-Skip "publish skipped"
 }
 
-# The publish overwrites web.config, so it is rewritten here rather than being
-# edited by hand afterwards. Note what is NOT in it: an <environmentVariables>
-# block. This IIS rejects those with 500.19 / 0x8007000d, which is a long and
-# deeply misleading debugging session if you have to rediscover it.
-Write-Step "Writing web.config"
+# The publish generates web.config itself, and does it correctly. This is a
+# safety net for the two cases that actually break IIS, not a replacement:
+#
+#   * a UTF-8 BOM -- IIS answers 500.19 / 0x8007000d
+#   * an <environmentVariables> block -- rejected on this machine with the same
+#     500.19, and the error points at position 0 of the file rather than at the
+#     block, which makes it very hard to find
+#
+# Both were confirmed by testing all four combinations. A file that already
+# passes is left exactly as the publish produced it.
+Write-Step "Checking web.config"
 
 foreach ($site in @(
     @{ Path = $ApiSitePath;   Dll = "AI.TicketingAssistant.Api.dll" }
     @{ Path = $AgentSitePath; Dll = "AI.TicketingAssistant.PythonNetApp.dll" }
 )) {
-    $xml = @"
+    $config = Join-Path $site.Path "web.config"
+    $label = Split-Path $site.Path -Leaf
+
+    if (-not (Test-Path $config)) {
+        Write-Skip "$label : not present, leaving it to the publish"
+        continue
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($config)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    $hasEnvVars = [bool](Select-String -Path $config -Pattern "environmentVariables" -Quiet)
+
+    if ($hasBom -or $hasEnvVars) {
+        $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <system.webServer>
@@ -420,123 +439,114 @@ foreach ($site in @(
   </system.webServer>
 </configuration>
 "@
-    Write-Utf8NoBom (Join-Path $site.Path "web.config") $xml
-    Write-Ok "web.config written (UTF-8, no BOM -- IIS rejects a BOM with 500.19)"
+        Write-Utf8NoBom $config $xml
+        $reason = @()
+        if ($hasBom) { $reason += "BOM" }
+        if ($hasEnvVars) { $reason += "environmentVariables" }
+        Write-Ok "$label : rewrote web.config (had $($reason -join ' + '), which IIS rejects with 500.19)"
+    } else {
+        Write-Ok "$label : web.config is publish-generated and clean"
+    }
 }
 
 # ---------------------------------------------------------------- 6. config
 
-# Secrets go into the app pool first, and only end up in a file if that fails.
-# The ordering matters: a secret written under C:\inetpub\wwwroot is one
-# misconfiguration away from being served, and the earlier version of this script
-# wrote it unconditionally and then told you to remove it afterwards.
-Write-Step "Placing secrets"
+# appsettings.Production.json is source-controlled and published, and the csproj
+# strips appsettings.json / appsettings.Development.json from the publish output
+# so development configuration never reaches the web root. This script does not
+# own those files: writing them would replace hand-tuned values with generated
+# ones on every run.
+#
+# What it still does is check that the published result actually works, and fill
+# a genuine gap -- a missing file on a fresh machine -- without clobbering
+# anything that exists.
+Write-Step "Checking published configuration"
 
-$secretInAppPool = @{}
+foreach ($f in @(
+    @{ Path = (Join-Path $ApiSitePath   "appsettings.Production.json"); Name = "API" },
+    @{ Path = (Join-Path $AgentSitePath "appsettings.Production.json"); Name = "agent" }
+)) {
+    if (-not (Test-Path $f.Path)) {
+        Write-Warn "$($f.Name): appsettings.Production.json is missing from the site"
+        Write-Warn "  the publish should have copied it from the project. Check the FolderProfile."
+        continue
+    }
+    try {
+        $json = Get-Content $f.Path -Raw | ConvertFrom-Json
+        $parts = @()
+        if ($json.Jwt) {
+            if ($json.Jwt.SigningKey) { $parts += "SigningKey" }
+            if ($json.Jwt.ServiceSecret) { $parts += "ServiceSecret" }
+        }
+        if ($json.ConnectionStrings -and $json.ConnectionStrings.ContractDb) { $parts += "ContractDb" }
+        if ($json.Lookup -and $json.Lookup.BaseUrl) { $parts += "Lookup:BaseUrl" }
+        Write-Ok "$($f.Name): $(if($parts){$parts -join ', '}else{'no settings found'})"
+    } catch {
+        Write-Warn "$($f.Name): appsettings.Production.json is not valid JSON - $($_)"
+    }
+}
 
+$apiSecret = (Get-Content (Join-Path $ApiSitePath "appsettings.Production.json") -Raw | ConvertFrom-Json).Jwt.ServiceSecret
+$agentSecret = (Get-Content (Join-Path $AgentSitePath "appsettings.Production.json") -Raw | ConvertFrom-Json).Jwt.ServiceSecret
+if ($apiSecret -and $agentSecret) {
+    if ($apiSecret -eq $agentSecret) {
+        Write-Ok "service secrets match across both applications"
+    } else {
+        Write-Warn "the two applications have DIFFERENT service secrets"
+        Write-Warn "every /api/chat turn will fail with 401 until they match."
+    }
+}
+
+# Secrets belong in app-pool environment variables, not in the web root. Doing
+# that here is optional and only possible elevated, so it is reported rather
+# than assumed -- and never silently skipped.
 if ($isAdmin) {
+    Write-Step "Moving secrets out of the web root"
     function Set-AppPoolVariable([string]$Pool, [string]$Name, [string]$Value) {
         & "$env:windir\System32\inetsrv\appcmd.exe" set config -section:"system/applicationPools/$Pool" `
             "/[environmentVariables]/add:name=$Name" "/value=$Value" 2>&1 | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
-
-    foreach ($pool in @($ApiAppPool, $AgentAppPool)) {
-        if (Set-AppPoolVariable $pool "Jwt__ServiceSecret" $ServiceSecret) {
-            $secretInAppPool["service"] = $true
-            Write-Ok "Jwt__ServiceSecret set on '$pool'"
-        } else {
-            $secretInAppPool["service"] = $false
-            Write-Warn "could not set Jwt__ServiceSecret on '$pool'"
+    if ($SigningKey -and (Set-AppPoolVariable $ApiAppPool "Jwt__SigningKey" $SigningKey)) {
+        Write-Ok "Jwt__SigningKey set on '$ApiAppPool'"
+        Write-Host "    It overrides appsettings.Production.json. Remove it from that file to finish." -ForegroundColor DarkGray
+    }
+    if ($ServiceSecret) {
+        $setOnApi = Set-AppPoolVariable $ApiAppPool "Jwt__ServiceSecret" $ServiceSecret
+        $setOnAgent = Set-AppPoolVariable $AgentAppPool "Jwt__ServiceSecret" $ServiceSecret
+        if ($setOnApi -and $setOnAgent) {
+            Write-Ok "Jwt__ServiceSecret set on both application pools"
+            Write-Host "    It overrides appsettings.Production.json. Remove it from both to finish." -ForegroundColor DarkGray
         }
     }
-    if (Set-AppPoolVariable $ApiAppPool "Jwt__SigningKey" $SigningKey) {
-        $secretInAppPool["signing"] = $true
-        Write-Ok "Jwt__SigningKey set on '$ApiAppPool'"
-    } else {
-        $secretInAppPool["signing"] = $false
-        Write-Warn "could not set Jwt__SigningKey"
-    }
 } else {
-    $secretInAppPool["service"] = $false
-    $secretInAppPool["signing"] = $false
-}
-
-$serviceInFile = -not $secretInAppPool["service"]
-$signingInFile = -not $secretInAppPool["signing"]
-
-if ($serviceInFile -or $signingInFile) {
-    Write-Warn "some secrets had to be written to appsettings.Production.json under the web root."
-    Write-Warn "re-run this script elevated to move them into app-pool environment variables."
-}
-
-$apiSettings = [ordered]@{
-    ConnectionStrings = [ordered]@{
-        ContractDb = $conn
-    }
-    Jwt = [ordered]@{
-        Issuer              = "opslookup"
-        Audience            = "opslookup"
-        ServiceTokenMinutes = 720
-        ServiceSubject      = "ticketing-agent"
-    }
-}
-# Omitted entirely rather than written blank. An empty SigningKey would still
-# look like configuration, and the Production startup check would reject it with
-# a message that does not point at the app pool.
-if ($signingInFile) { $apiSettings.Jwt["SigningKey"] = $SigningKey }
-if ($serviceInFile) { $apiSettings.Jwt["ServiceSecret"] = $ServiceSecret }
-Write-Utf8NoBom (Join-Path $ApiSitePath "appsettings.Production.json") `
-    ($apiSettings | ConvertTo-Json -Depth 6)
-Write-Ok "API appsettings.Production.json"
-
-$agentSettings = [ordered]@{
-    # 127.0.0.1, not localhost. Under the app-pool identity "localhost" resolves
-    # to ::1 first, the data API is not listening there, and httpx does not fall
-    # back to IPv4 the way a browser does -- so every lookup failed with a
-    # connection error while the API was plainly up.
-    Lookup = [ordered]@{ BaseUrl = "http://127.0.0.1:$ApiPort" }
-    Python = [ordered]@{
-        Directory = "Python"
-        Venv      = "Python/.venv"
-    }
-}
-if ($serviceInFile) { $agentSettings["Jwt"] = [ordered]@{ ServiceSecret = $ServiceSecret } }
-Write-Utf8NoBom (Join-Path $AgentSitePath "appsettings.Production.json") `
-    ($agentSettings | ConvertTo-Json -Depth 6)
-Write-Ok "agent appsettings.Production.json"
-
-if (-not $serviceInFile -and -not $signingInFile) {
-    Write-Ok "no secrets in the web root"
+    Write-Host "    Not elevated: secrets stay in appsettings.Production.json under the web root." -ForegroundColor DarkGray
+    Write-Host "    Re-run elevated to move them into app-pool environment variables." -ForegroundColor DarkGray
 }
 
 # ----------------------------------------------------------- 7. Python .env
-Write-Step "Writing the Python environment file"
+#
+# Python\.env is published from the project rather than generated here, so this
+# only fills a real gap on a fresh machine and verifies what arrived. An existing
+# file is never overwritten: it holds the LongCat key, and a regenerated one
+# would silently point the agent at a different model or endpoint.
+Write-Step "Checking the Python environment file"
 
-$key = $LongCatApiKey
-if (-not $key) {
-    $existing = Join-Path $AgentSitePath "Python\.env"
-    if (Test-Path $existing) {
-        $m = Select-String -Path $existing -Pattern '^LONGCAT_API_KEY=(.+)$'
-        if ($m) { $key = $m.Matches[0].Groups[1].Value }
+$envPath = Join-Path $AgentSitePath "Python\.env"
+if (-not (Test-Path $envPath)) {
+    if (-not $LongCatApiKey) {
+        throw "No Python\.env in the site and no -LongCatApiKey given. Copy the project's Python\.env, or pass -LongCatApiKey."
     }
-}
-if (-not $key) {
-    throw "No LongCat API key. Pass -LongCatApiKey or set one in the deployed Python\.env first."
-}
-
-# No API_TOKEN here on purpose: the .NET host mints a bearer token per turn and
-# hands it to Python. The agent must never hold a credential of its own.
-$pythonEnv = @"
-# Written by deploy.ps1. Regenerated on every run -- do not hand-edit.
-# There is deliberately no API_TOKEN: the .NET host obtains a token per turn
-# via POST /auth/service-token and passes it in, so the agent has no
-# credential-issuing capability of its own.
+    $template = Join-Path $script:RepoRoot "src\OpsLookup.NetCorePythonNetApp\Python\.env"
+    $body = @"
+# Generated by deploy.ps1. There is deliberately no API_TOKEN: the .NET host
+# obtains a token per turn via POST /auth/service-token and passes it in, so the
+# agent has no credential-issuing capability of its own.
 
 API_BASE_URL=http://127.0.0.1:$ApiPort
 OPERATOR_ID=op-4471
 
-LONGCAT_API_KEY=$key
+LONGCAT_API_KEY=$LongCatApiKey
 LONGCAT_BASE_URL=https://opencode.ai/zen/go/v1
 LONGCAT_MODEL=longcat-2.5-preview-free
 
@@ -545,8 +555,36 @@ RECURSION_LIMIT=10
 REQUEST_TIMEOUT_SECONDS=20
 LOG_LEVEL=INFO
 "@
-Write-Utf8NoBom (Join-Path $AgentSitePath "Python\.env") $pythonEnv
-Write-Ok "Python\.env written (no API_TOKEN)"
+    Write-Utf8NoBom $envPath $body
+    Write-Ok "Python\.env created"
+} else {
+    Write-Ok "Python\.env came from the publish, left as-is"
+}
+
+# Checked rather than assumed. Every one of these has a distinct failure that
+# looks like something else: a missing key stops the agent at warmup, and an
+# API_TOKEN left behind would mean the agent holds a credential it should not.
+$envText = [System.IO.File]::ReadAllText($envPath)
+$checks = @(
+    @{ Name = "LONGCAT_API_KEY"; Pattern = '^LONGCAT_API_KEY=\S+'; Required = $true },
+    @{ Name = "API_BASE_URL";    Pattern = '^API_BASE_URL=\S+';    Required = $true },
+    @{ Name = "API_TOKEN";       Pattern = '^API_TOKEN=';          Required = $false }
+)
+foreach ($c in $checks) {
+    $present = [bool]([regex]::Match($envText, "(?m)$($c.Pattern)").Success)
+    if ($c.Name -eq "API_TOKEN") {
+        if ($present) {
+            Write-Warn "API_TOKEN is present in Python\.env - the agent should not hold one"
+            Write-Warn "  it should obtain a token per turn from POST /auth/service-token"
+        } else {
+            Write-Ok "no API_TOKEN (correct - tokens are minted per turn)"
+        }
+    } elseif ($c.Required -and -not $present) {
+        Write-Warn "$($c.Name) missing from Python\.env"
+    } elseif ($present) {
+        Write-Ok "$($c.Name) present"
+    }
+}
 
 # --------------------------------------------------- 7b. writable data dir
 #
@@ -661,14 +699,27 @@ try {
 if ($devTokenClosed) { Write-Ok "dev-token is closed outside Development (404)" }
 else { Write-Warn "dev-token responded - this MUST be 404 outside Development" }
 
-$serviceTokenOk = $false
+# Read from the deployed file rather than from a value resolved earlier in the
+# run. The publish is what puts that file there, so this is the first point at
+# which the truth is actually on disk -- on a fresh machine the earlier read had
+# nothing to find and would silently verify against nothing.
+$deployedSecret = $null
 try {
-    $token = Invoke-RestMethod "http://localhost:$ApiPort/auth/service-token" -Method Post `
-        -Headers @{ "X-Service-Secret" = $ServiceSecret } -TimeoutSec 15
-    $rows = Invoke-RestMethod "http://localhost:$ApiPort/api/contracts?socialId=1234567890" `
-        -Headers @{ Authorization = "Bearer $($token.accessToken)" } -TimeoutSec 15
-    $serviceTokenOk = $true
+    $deployedSecret = (Get-Content (Join-Path $ApiSitePath "appsettings.Production.json") -Raw |
+        ConvertFrom-Json).Jwt.ServiceSecret
 } catch { }
+
+$serviceTokenOk = $false
+$rows = $null
+if ($deployedSecret) {
+    try {
+        $token = Invoke-RestMethod "http://localhost:$ApiPort/auth/service-token" -Method Post `
+            -Headers @{ "X-Service-Secret" = $deployedSecret } -TimeoutSec 15
+        $rows = Invoke-RestMethod "http://localhost:$ApiPort/api/contracts?socialId=1234567890" `
+            -Headers @{ Authorization = "Bearer $($token.accessToken)" } -TimeoutSec 15
+        $serviceTokenOk = $true
+    } catch { }
+}
 if ($serviceTokenOk) {
     Write-Ok "service token works ($($rows.Count) contract rows returned)"
 } else {
