@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net9</TargetFramework>
@@ -17,5 +17,13 @@
     </PackageReference>
     <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="10.3.0" />
   </ItemGroup>
+	<Target Name="RemoveDevelopmentSettingsOnPublish" AfterTargets="ComputeFilesToPublish">
+		<ItemGroup>
+			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+								   Condition="'%(Filename)%(Extension)' == 'appsettings.Development.json'" />
+			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+								   Condition="'%(Filename)%(Extension)' == 'appsettings.json'" />
+		</ItemGroup>
+	</Target>
 
 </Project>
