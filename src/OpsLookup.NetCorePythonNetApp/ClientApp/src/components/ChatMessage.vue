@@ -93,7 +93,7 @@ const speaker = computed(() =>
       v-else
       class="max-w-full rounded-2xl rounded-bl-md border border-line bg-agent-bubble px-4 py-3 text-ink shadow-sm ring-1 ring-black/[0.02]"
     >
-      <div class="prose-agent" v-html="html" />
+      <div class="prose-agent px-4" v-html="html" />
     </div>
 
     <!--

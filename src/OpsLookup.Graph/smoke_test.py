@@ -19,6 +19,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
+import httpx
 
 from graph.build import (
     ATTORNEY_STATUSES,
@@ -99,14 +100,48 @@ def check(label: str, condition: bool) -> None:
         raise AssertionError(label)
 
 
+async def mint_dev_token(base_url: str, operator_id: str) -> str:
+    """Ask the Development-only endpoint for a short-lived token.
+
+    The smoke test used to read a long-lived API_TOKEN out of .env. That stopped
+    working when the agent moved to per-turn service tokens, and .env no longer
+    carries one by design -- an `API_TOKEN` sitting in a file is exactly the
+    credential the agent is not supposed to hold. The dev-token endpoint exists
+    for this case, is gated to Development, and issues a token that expires.
+    """
+    url = f"{base_url}/auth/dev-token?operatorId={operator_id}&minutes=30"
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            response = await http.post(url)
+    except httpx.HTTPError as exc:
+        print(f"Could not reach the dev-token endpoint at {url}: {exc}")
+        return ""
+    if response.status_code != 200:
+        print(
+            f"dev-token returned HTTP {response.status_code}. It only exists in "
+            "Development - start the API with ASPNETCORE_ENVIRONMENT=Development."
+        )
+        return ""
+    return response.json().get("accessToken", "")
+
+
 async def main() -> int:
     base_url = os.getenv("API_BASE_URL", "http://localhost:5250").rstrip("/")
-    token = os.getenv("API_TOKEN", "")
-    if not token:
-        print("API_TOKEN is not set. See .env.example.")
-        return 1
+    operator_id = os.getenv("OPERATOR_ID", "smoke-test")
 
-    client = LookupApiClient(base_url, token, os.getenv("OPERATOR_ID", "smoke-test"))
+    token = await mint_dev_token(base_url, operator_id)
+    if not token:
+        # Fall back to an explicit token for anyone running against a
+        # non-Development API that has a ServiceSecret configured.
+        token = os.getenv("API_TOKEN", "")
+        if not token:
+            print(
+                "No token available. Run the API with ASPNETCORE_ENVIRONMENT=Development, "
+                "or set API_TOKEN in .env."
+            )
+            return 1
+
+    client = LookupApiClient(base_url, token, operator_id)
     if not await client.health():
         print(f"The .NET API is not reachable at {base_url}. Start it first.")
         return 1

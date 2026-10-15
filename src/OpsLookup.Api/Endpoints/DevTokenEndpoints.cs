@@ -1,9 +1,5 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
 using OpsLookup.Api.Contracts;
 using OpsLookup.Api.Security;
 
@@ -13,8 +9,20 @@ namespace OpsLookup.Api.Endpoints;
 /// Issues a signed token so the API can be exercised without a real identity provider.
 /// Registered only when the environment is Development.
 /// </summary>
+/// <remarks>
+/// Anonymous, and the caller chooses both the subject and the lifetime, so it is
+/// mapped inside an <c>IsDevelopment()</c> check in <c>Program.cs</c>. Do not move
+/// that call out: an open dev-token endpoint is a production data breach.
+/// </remarks>
 public static class DevTokenEndpoints
 {
+    /// <summary>
+    /// Upper bound on the requested lifetime. The `minutes` parameter is
+    /// caller-supplied and was previously unbounded, which meant a token valid
+    /// for years could be minted from a query string.
+    /// </summary>
+    private const int MaxMinutes = 480;
+
     public static IEndpointRouteBuilder MapDevTokenEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/auth/dev-token", IssueToken)
@@ -48,29 +56,15 @@ public static class DevTokenEndpoints
             });
         }
 
-        var claims = new[]
-        {
-            new Claim(JwtRegisteredClaimNames.Sub, operatorId ?? "dev-operator"),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N")),
-        };
+        // Clamped, not validated: a caller asking for 100000 minutes gets the
+        // maximum rather than an error, which keeps local use frictionless.
+        var lifetime = Math.Clamp(minutes, 1, MaxMinutes);
 
-        var credentials = new SigningCredentials(
-            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SigningKey)),
-            SecurityAlgorithms.HmacSha256);
-
-        var token = new JwtSecurityToken(
-            issuer: options.Issuer,
-            audience: options.Audience,
-            claims: claims,
-            notBefore: DateTime.UtcNow,
-            expires: DateTime.UtcNow.AddMinutes(minutes),
-            signingCredentials: credentials);
-
-        var accessToken = new JwtSecurityTokenHandler().WriteToken(token);
+        var accessToken = JwtTokenFactory.Create(options, operatorId ?? "dev-operator", TimeSpan.FromMinutes(lifetime));
 
         return Results.Ok(new DevTokenResponse(
             AccessToken: accessToken,
             TokenType: "Bearer",
-            ExpiresInSeconds: minutes * 60));
+            ExpiresInSeconds: lifetime * 60));
     }
 }

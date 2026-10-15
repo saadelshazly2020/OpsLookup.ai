@@ -5,6 +5,23 @@ var builder = WebApplication.CreateBuilder(args);
 // ------------------------------------------------------------------- services
 builder.Services.AddSingleton<PythonBridge>();
 
+// Talks to the data API to exchange the shared secret for a bearer token. A
+// fresh HttpClient per process is fine here: one call per turn, and the handler
+// pool is sized for that.
+builder.Services.AddHttpClient<ServiceTokenClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+
+var lookupApiBaseUrl = (builder.Configuration["Lookup:BaseUrl"] ?? string.Empty).TrimEnd('/');
+if (string.IsNullOrWhiteSpace(lookupApiBaseUrl))
+{
+    // Loud, and at startup rather than on the first ticket.
+    Console.Error.WriteLine(
+        "Lookup:BaseUrl is not configured. The agent host needs to know where the "
+        + "data API is. Set Lookup__BaseUrl (e.g. http://localhost:5250).");
+}
+
 // Starts the embedded interpreter and builds the graph before the first request.
 builder.Services.AddHostedService<PythonWarmup>();
 
@@ -31,6 +48,8 @@ app.MapGet("/api/health", async (PythonBridge bridge) => Results.Ok(new
 app.MapPost("/api/chat", async (
     ChatRequest request,
     PythonBridge bridge,
+    ServiceTokenClient tokens,
+    IConfiguration config,
     CancellationToken cancellationToken) =>
 {
     if (!bridge.IsReady)
@@ -53,11 +72,17 @@ app.MapPost("/api/chat", async (
 
     try
     {
+        // The token is minted here, per turn, and handed to Python. The agent
+        // never sees the shared secret and cannot obtain credentials itself.
+        var apiToken = await tokens.GetTokenAsync(cancellationToken);
+
         var outcome = await bridge.ChatAsync(
             request.TicketId,
             request.Message,
             request.OperatorId,
-            request.Locale);
+            request.Locale,
+            lookupApiBaseUrl,
+            apiToken);
 
         return outcome.Error
             ? Results.Json(outcome, statusCode: StatusCodes.Status502BadGateway)

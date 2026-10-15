@@ -4,10 +4,45 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Off by default. The venv is ~7.6k files and ~76 MB, and it is not
+      relocatable: pyvenv.cfg holds an absolute `home` pointing at the base
+      install, so a copy only works if the server has Python at that exact
+      path. Leave this off and provision the venv on the server, then point
+      Python:Venv at it in appsettings.Production.json.
+    -->
+    <IncludePythonVenv Condition="'$(IncludePythonVenv)' == ''">false</IncludePythonVenv>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="pythonnet" Version="3.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The SDK Web project does not copy arbitrary folders to the publish
+      output, which is why nothing under Python/ shipped and the host could not
+      find its interpreter.
+
+      Excluded on purpose:
+        .venv      - provisioned separately; not relocatable and huge
+        logs       - runtime output, must be writable, not a build artifact
+        __pycache__ - machine-specific bytecode
+        .env       - SECRETS. MSBuild globbing is filesystem-based, NOT
+                     git-based, so .gitignore does not protect this. Including
+                     it would ship LONGCAT_API_KEY and API_TOKEN. Do not drop
+                     this exclusion.
+
+      .env.example is not excluded and should ship: it is the blank template.
+    -->
+    <Content Include="Python\**"
+             Exclude="Python\.venv\**;Python\logs\**;Python\**\__pycache__\**;Python\.env;Python\checkpoints.sqlite*;Python\smoke_test.py"
+             CopyToPublishDirectory="PreserveNewest" />
+
+    <Content Include="Python\.venv\**"
+             Condition="'$(IncludePythonVenv)' == 'true'"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

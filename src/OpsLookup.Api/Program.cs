@@ -90,9 +90,22 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
 app.MapContractEndpoints();
 app.MapAttorneyEndpoints();
 
+// Service tokens are how the agent host authenticates in every environment.
+app.MapServiceTokenEndpoints();
+
+// The dev-token endpoint is anonymous and lets the caller choose both the
+// subject and the lifetime, so it must never exist outside Development. It was
+// previously mapped unconditionally: on the IIS deployment anyone who could
+// reach the port could mint a year-long token and read every contract and
+// attorney row.
 if (app.Environment.IsDevelopment())
 {
     app.MapDevTokenEndpoints();
+}
+
+if (app.Environment.IsDevelopment())
+{
+    
 
     using (var scope = app.Services.CreateScope())
     {

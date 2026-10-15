@@ -67,10 +67,18 @@ def _required(name: str) -> str:
     return value
 
 
-def load_settings() -> Settings:
+def load_settings(*, require_api_token: bool = True) -> Settings:
+    """Read configuration from the environment.
+
+    `require_api_token` is False for the embedded host, where .NET supplies the
+    token per turn and `.env` no longer carries one. The standalone api.py keeps
+    the default: it has no host to hand it a token, so a missing one there is a
+    real misconfiguration and should fail loudly rather than issue a request that
+    is guaranteed to be rejected.
+    """
     return Settings(
         api_base_url=os.getenv("API_BASE_URL", "http://localhost:5250").rstrip("/"),
-        api_token=_required("API_TOKEN"),
+        api_token=_required("API_TOKEN") if require_api_token else os.getenv("API_TOKEN", "").strip(),
         operator_id=os.getenv("OPERATOR_ID", "ops-member"),
         longcat_api_key=_required("LONGCAT_API_KEY"),
         longcat_base_url=os.getenv(
@@ -82,7 +90,7 @@ def load_settings() -> Settings:
         request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "20")),
         opencode_session_id=os.getenv("OPENCODE_SESSION_ID") or _stable_session_id(),
         user_agent=os.getenv(
-            "USER_AGENT", "OpsLookup.NetCorePythonNetApp/0.1"
+            "USER_AGENT", "OpsLookup.Graph/0.1 (+https://localhost:8000)"
         ),
     )
 

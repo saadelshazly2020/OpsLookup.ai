@@ -27,13 +27,21 @@ class LookupApiClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._operator_id = operator_id
+
+        # Only send Authorization when there is a token. "Bearer " with nothing
+        # after it is an illegal header value and httpx raises
+        # LocalProtocolError on it -- which health() then swallows as an
+        # HTTPError, so the data API reports as unreachable when it is fine.
+        # That path is now real: the embedded host is handed a token per turn and
+        # has none during warmup or the reachability probe.
+        headers = {"X-Operator-Id": operator_id}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=timeout_seconds,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "X-Operator-Id": operator_id,
-            },
+            headers=headers,
         )
 
     async def aclose(self) -> None:

@@ -307,6 +307,159 @@ Every one of these failed silently or misleadingly. Worth remembering.
 | `SyntaxError: Unexpected token '﻿'` building the client | PowerShell `Set-Content -Encoding UTF8` writes a **BOM**, and Node's JSON loader rejects it | Write with `[System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($false)))` |
 | Arabic crashes a test run with `UnicodeEncodeError: 'charmap'` | Console is cp1252 and cannot print Arabic. Not an application fault | Set `PYTHONIOENCODING=utf-8`. `host.py::_log` already opens `progress.log` with `encoding="utf-8"`, so real log writes are safe |
 
+### Deploying to IIS
+
+An SDK Web project copies **only** compiled assemblies and `wwwroot`. It does not copy
+arbitrary folders, so nothing under `Python/` shipped and the host reported the venv as
+missing. The csproj now has explicit `Content` items for `Python/**`.
+
+Three traps in that change:
+
+| Trap | Why it bites |
+|---|---|
+| `.env` gets published | MSBuild globbing is **filesystem-based, not git-based**. `.gitignore` gives no protection; `Content Include="Python/**"` would ship the live `LONGCAT_API_KEY` and `API_TOKEN`. The `Exclude` is load-bearing. |
+| Nested `__pycache__` survives | `Python\__pycache__\**` only matches the top level. Needs `Python\**\__pycache__\**`. |
+| `checkpoints.sqlite` ships | Runtime state left behind by a local run. Excluded explicitly. |
+
+Two path bugs that only appear once the app leaves `dotnet run`:
+
+- **Relative config paths resolved against the working directory.**
+  `Path.GetFullPath("Python")` uses `Environment.CurrentDirectory`. That equals the
+  project folder under `dotnet run` and is unrelated to the app folder under IIS — it
+  appeared to work there only because that host happened to set the working directory to
+  the application directory. `ResolveAgainstApp` now anchors to `AppContext.BaseDirectory`
+  and falls back to the working directory when that is where the file actually lives; the
+  fallback is what keeps `dotnet run` working, since the venv sits beside the project file
+  rather than beside the built binary.
+- **Python wrote diagnostics inside the app folder.** `logs/` and the SQLite checkpointer
+  defaulted to `Python/`, which the app pool identity cannot write to in practice. Both
+  now derive from `OPSLOOKUP_DATA_DIR`, which should point at somewhere writable such as
+  `C:\ProgramData\AI.TicketingAssistant`.
+
+The **stderr hazard** is the one that does not fail loudly. langchain and langgraph create
+their own loggers; with no root handler, Python's last-resort handler writes anything at
+WARNING or above to `sys.stderr`. IIS gives the process no console, and a blocked stderr
+write happens *while holding the GIL*, which stalls every `Py.GIL()` call in .NET. The
+symptom is requests that hang with no error and no log line. `host.py::_configure_logging`
+installs a file handler on the root logger before the library imports, which both
+suppresses that fallback and captures the diagnostics.
+
+Not fixed by any of the above: **IIS recycles app pools** (20-minute idle by default) and
+each recycle pays the 60–120s `langgraph` import again. `Always Running` and preloading
+reduce it; hosting as a Windows Service removes it.
+
+#### Deploying with `tools/deploy.ps1`
+
+Everything above was originally done by hand, in an order that turned out to matter. It is
+now a single idempotent script:
+
+```powershell
+# first run needs the LongCat key; later runs reuse the deployed one
+.\tools\deploy.ps1 -LongCatApiKey oc_sk_xxx -Seed
+
+# routine redeploy - reuses the existing signing key and service secret
+.\tools\deploy.ps1
+```
+
+It checks prerequisites, creates the database and SQL principal, applies migrations,
+publishes both apps, writes configuration, then **verifies**: dev-token must 404, the
+service token must work, the agent must warm up. A run that cannot prove those passed is a
+run that failed, however clean the output looked.
+
+It reuses whatever secret is already deployed rather than generating a new one, so a
+redeploy does not invalidate every token in flight.
+
+Three things it deliberately does **not** do:
+
+- It does not put `<environmentVariables>` in `web.config`. See below.
+- It does not grant `db_owner`. Migrations are applied by the script; the application
+  itself only needs `db_datareader` + `db_datawriter`.
+- It does not write an `API_TOKEN`. The agent is handed a token per turn.
+
+#### Three traps that each produce a misleading error
+
+**`<environmentVariables>` in `web.config` is rejected on this machine.** IIS returns
+`500.19 / 0x8007000d` with "Config Source: -1: / 0:" — pointing at the *start of the
+file*, which is not where the problem is. `environmentVariables` is not defined as a
+config section in this `applicationHost.config`, so IIS cannot parse the block even though
+the surrounding XML is valid. Removing the block makes the site serve again immediately.
+This was the cause of the original `500.19`, not a BOM.
+
+The consequence is that app-pool environment variables are the only way to keep secrets out
+of the web root, and setting those needs elevation — which is why the script falls back to
+`appsettings.Production.json` (not HTTP-servable, verified 404) when it is not elevated, and
+says so.
+
+**`localhost` does not resolve for the app-pool identity.** It resolves to `::1` first; the
+data API is not listening there, and `httpx` does not fall back to IPv4 the way a browser
+does. Every lookup failed with a connection error while the API was plainly up on
+`http://127.0.0.1:3030/health`. Both `.env` and `Lookup:BaseUrl` use `127.0.0.1`.
+
+**A UTF-8 BOM in `web.config` is also `500.19`.** Same error code, different cause. Write it
+with `[System.IO.File]::WriteAllText($f, $xml, (New-Object System.Text.UTF8Encoding($false)))`.
+
+One bug only became visible because of the per-turn token change: `LookupApiClient` used to
+send `Authorization: Bearer {token}` unconditionally, so with no token it sent a header with
+**no value** — which `httpx` rejects with `LocalProtocolError`. `health()` catches that as
+an `HTTPError` and returns `False`, so the API reported as unreachable while being perfectly
+fine. The header is now only set when a token exists. This is why `/api/health` reporting
+`apiReachable: false` is worth believing.
+
+#### Runtime state outside the web root
+
+`checkpoints.sqlite` and `logs/` were being written into `Python/` under
+`C:\inetpub\wwwroot`, which is wrong twice over: the app pool identity should not be able to
+write there, and **each publish overwrote the diagnostics along with the code they describe**
+— so the evidence needed to explain a failed deployment is destroyed by the deployment.
+
+`PythonBridge.ApplyDataDirectory` resolves it before `PythonEngine.Initialize()`, because
+`host.py` reads `OPSLOOKUP_DATA_DIR` at import time and a value set later arrives too late. It
+falls through `OPSLOOKUP_DATA_DIR` → `%ProgramData%\AI.TicketingAssistant\data` → `%TEMP%`, and
+**probes each candidate by writing and deleting a real file** — a directory can exist and still
+be unwritable, and discovering that from a SQLite error inside Python is much harder than
+discovering it here. `deploy.ps1` creates the directory as the deployer and grants the app pool
+`Modify`, which succeeds unelevated because the deployer owns the folder it just made. The
+deployment then verifies the checkpoint file actually appears there, because asserting the
+directory exists proves nothing — the failure mode is Python writing there anyway.
+
+Secrets are placed **before** the settings file is written, and only appear in it if the app
+pool could not take them. The earlier version wrote them unconditionally and then asked you to
+remove them afterwards. Once they live in the app pool they are deliberately absent from the
+file, so the next run reads them from the app pool — otherwise every elevated run generates a
+fresh pair and quietly invalidates every issued token.
+
+One trap: `host.py` writes logs to `$OPSLOOKUP_DATA_DIR/logs`, *inside* the data directory.
+Creating `%ProgramData%\AI.TicketingAssistant\logs` instead yields an empty directory that never
+receives anything, which reads as "logging is broken".
+
+#### Publishing over a running site
+
+Publishing straight into the site folder fails with `MSB3027` — *"the file is locked by
+w3wp.exe"* — and MSBuild retries ten times first, so it presents as a hang. Dropping
+`app_offline.htm` into the site root releases the lock without needing to stop the app pool;
+`deploy.ps1` writes it, publishes, and removes it in a `finally`.
+
+The failure was invisible at first because the publish step piped to `Out-Null`, so the script
+reported `publishing the API failed` with no reason attached. Build output is now surfaced on
+failure.
+
+#### Two long-standing silent problems
+
+**The Python trees had drifted.** `graph/build.py` in the embedded copy still carried older
+Arabic wording — `رقم الهوية الوطنية` (national ID) and `الوكالة` (the agency) — while the UI
+used `الرقم الاجتماعي` (social ID) and `محامي` (attorney). An operator clicking the Arabic
+example button saw the agent talk about a *national ID* and an *agency*, contradicting the
+prompt they had just clicked. Nothing enforced the two copies matching; they now differ only
+in `api.py` (dev entry point) and `host.py` (IIS host), and `deploy.ps1` **hash-checks every
+shared `.py` and refuses to deploy on drift**.
+
+**`smoke_test.py` still required a long-lived `API_TOKEN`.** When `.env` stopped carrying one —
+which is correct, since an `API_TOKEN` in a file is exactly the credential the agent should not
+hold — the test failed with *"The lookup API rejected the service token"*, having silently
+stopped testing the lookup path at all. It now mints its own 30-minute token from the
+Development-only `dev-token` endpoint, which is what that endpoint is for. It is also excluded
+from publish: it is a dev-only test and has no business in a web root.
+
 ### Front end
 
 Tailwind v4, configured in CSS rather than `tailwind.config.js`. Tokens live in
@@ -446,6 +599,50 @@ dotnet ef database update  --project src\OpsLookup.Api\OpsLookup.Api.csproj
 
 ## 11. Security notes
 
+### Service credentials (how the agent authenticates)
+
+The agent host mints its own token **per turn** and hands it to Python as a plain
+string argument. Python has no way to obtain a token.
+
+```
+PythonBridge.ChatAsync
+  ├─ ServiceTokenClient.GetTokenAsync()   POST /auth/service-token  + X-Service-Secret
+  └─ run_turn(threadId, message, operatorId, locale, apiBaseUrl, apiToken)
+```
+
+Rules that are easy to undo by accident:
+
+| Rule | Why |
+|---|---|
+| The shared secret lives in **.NET** config, never in Python's `.env` | A bug or prompt injection in the agent must not be able to mint API access |
+| `ServiceSecret` must be set via the **`Jwt__ServiceSecret` environment variable** | `appsettings.Production.json` sits in the web root, which is how a key ended up in one once |
+| `ServiceSecret` is **separate from `SigningKey`** | Reusing it means anything that can request a token can also forge one |
+| `ServiceSubject` comes from config, never the request | The dev endpoint lets the caller pick `operatorId`; a machine identity should not choose who it is |
+
+The secret is compared with `CryptographicOperations.FixedTimeEquals`. A plain `==`
+leaks it byte-by-byte.
+
+`load_settings(require_api_token=...)` exists because `host.py` no longer reads
+`API_TOKEN` from `.env` but still calls `load_settings()`, which used to raise when it
+was absent. The standalone `api.py` keeps the strict default — it has no host to hand
+it a token, so a missing one there is a real misconfiguration.
+
+**No caching, deliberately.** One extra localhost call against a fifteen-second model
+turn costs nothing and removes every staleness question a cache would raise. Prove it by
+setting `Jwt:ServiceTokenMinutes=1`, running a ticket, waiting longer than that, and
+running another — the second must still succeed.
+
+### The dev-token endpoint
+
+`POST /auth/dev-token` is anonymous and lets the caller choose both the subject and the
+lifetime, so it is mapped **inside an `IsDevelopment()` check**. It was previously mapped
+unconditionally: on the IIS deployment anyone who could reach the port could mint a
+year-long token with `?minutes=525600` and read every contract and attorney row.
+`minutes` is now clamped to 480.
+
+Do not move that `MapDevTokenEndpoints()` call out of the `if`. An open dev-token
+endpoint in production is a data breach.
+
 - JWT is **symmetric-key** validation for local development. `Program.cs` refuses to
   start in Production if `Jwt:SigningKey` is missing or under 32 characters. Swap
   `AddJwtBearer` for OIDC validation when there is a real IdP.
@@ -473,9 +670,24 @@ dotnet ef database update  --project src\OpsLookup.Api\OpsLookup.Api.csproj
       partial party name, the no-attorney case, and a rejected social ID. 20 assertions
       in `smoke_test.py`.
 - [x] `CK_Attorney_Status` proven to reject a bad value via direct SQL, not just via C#.
+- [x] `/auth/dev-token` gated behind `IsDevelopment()`; `minutes` clamped to 480.
+- [x] Service token minted per turn by .NET, never cached, never held by Python. Proven by
+      running with `Jwt:ServiceTokenMinutes=1`, waiting past expiry, and taking a second turn
+      successfully.
+- [x] App runs as `db_datareader` + `db_datawriter` instead of `db_owner`.
+- [x] `tools/deploy.ps1` — one idempotent script replaces the whole manual procedure, and
+      fails the run if dev-token is reachable or the service token does not work.
+- [x] Runtime state (`checkpoints.sqlite`, `logs/`) moved to
+      `%ProgramData%\AI.TicketingAssistant\data`, out of the web root.
+- [x] Secrets placed in app-pool environment variables first; written to
+      `appsettings.Production.json` only if that fails.
+- [ ] Rotate `LONGCAT_API_KEY` — it was exposed in plaintext and also sat in the deployed
+      `Python\.env` before the csproj `Exclude` was added.
+- [ ] Re-run `.\tools\deploy.ps1` **elevated** to finish moving
+      `Jwt:SigningKey` and `Jwt:ServiceSecret` out of the web root. Needs administrator.
+      `<environmentVariables>` in `web.config` is not an option on this IIS.
+- [ ] Decide internal tool vs real users — this determines whether hosting as a Windows
+      Service (removing the 60–120s recycle cold start) is worth doing.
 - [ ] Swap symmetric JWT for OIDC if a real identity provider exists
 - [ ] Confirm Swagger's **Execute** button by hand — it was verified for Authorize
       only, because headless automation cannot render Swagger UI's React body
-- [ ] Consider token expiry longer than 60 minutes for the service token. Both Python
-      apps hard-fail with "The lookup API rejected the service token" when it lapses,
-      which is at least a loud failure rather than a silent empty answer.

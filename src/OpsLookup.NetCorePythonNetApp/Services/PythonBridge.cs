@@ -43,14 +43,69 @@ public sealed class PythonBridge : IAsyncDisposable
         _configuration = configuration;
         _logger = logger;
 
-        _pythonDir = Path.GetFullPath(
-            configuration["Python:Directory"]
-            ?? Path.Combine(AppContext.BaseDirectory, "Python"));
+        _pythonDir = ResolveAgainstApp(configuration["Python:Directory"])
+            ?? Path.Combine(AppContext.BaseDirectory, "Python");
 
-        _venvDir = Path.GetFullPath(
-            configuration["Python:Venv"] ?? Path.Combine(_pythonDir, ".venv"));
+        _venvDir = ResolveAgainstApp(configuration["Python:Venv"])
+            ?? Path.Combine(_pythonDir, ".venv");
 
         _basePythonDir = ResolveBasePythonDir(_venvDir);
+    }
+
+    /// <summary>
+    /// Turns a configured path into an absolute one. Relative values are anchored
+    /// to the application directory, falling back to the process working
+    /// directory when that is where the file actually lives.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Under IIS the working directory is chosen by the host and is usually not
+    /// the deployed folder, so a bare relative path could resolve to somewhere
+    /// else entirely — it happened to work here only because this host happened
+    /// to set the working directory to the application folder, which is not
+    /// something to rely on. Rooted values are honoured unchanged, which is what
+    /// makes an absolute path on the server work.
+    /// </para>
+    /// <para>
+    /// The working-directory fallback exists for <c>dotnet run</c>, where the
+    /// venv sits beside the project file rather than beside the built binary.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// Null for an absent or blank value so the caller can apply its own default.
+    /// </returns>
+    private static string? ResolveAgainstApp(string? configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        var value = configured.Trim();
+        if (Path.IsPathRooted(value))
+        {
+            return Path.GetFullPath(value);
+        }
+
+        bool Exists(string path) => Directory.Exists(path) || File.Exists(path);
+
+        var againstApp = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, value));
+        if (Exists(againstApp))
+        {
+            return againstApp;
+        }
+
+        var againstWorkingDir =
+            Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, value));
+        if (Exists(againstWorkingDir))
+        {
+            return againstWorkingDir;
+        }
+
+        // Neither exists. Return the application-relative path anyway, so the
+        // error message names the location the host actually looked at first
+        // rather than something vaguer.
+        return againstApp;
     }
 
     public string PythonDirectory => _pythonDir;
@@ -250,6 +305,12 @@ public sealed class PythonBridge : IAsyncDisposable
             return;
         }
 
+        // Before anything else. host.py reads OPSLOOKUP_DATA_DIR at import time to
+        // place its log file and SQLite checkpointer, and a value set afterwards
+        // would arrive too late -- the paths would already be fixed. Python runs
+        // in-process, so it inherits this process's environment.
+        ApplyDataDirectory();
+
         var sitePackages = Path.Combine(_venvDir, "Lib", "site-packages");
         var runtimeDll = ResolveRuntimeDll();
 
@@ -273,6 +334,107 @@ public sealed class PythonBridge : IAsyncDisposable
         _logger.LogInformation(
             "PythonEngine initialised: dll={Dll} home={Home} sitePackages={SitePackages}",
             runtimeDll, _basePythonDir, sitePackages);
+    }
+
+    /// <summary>
+    /// Decides where Python writes its log file and SQLite checkpointer, and
+    /// publishes the answer as <c>OPSLOOKUP_DATA_DIR</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The application directory is a poor home for runtime state. Under IIS the
+    /// app pool identity has no write access to it, so the log file and
+    /// checkpointer silently fail to appear -- and worse, every deployment
+    /// overwrites them along with the code they describe.
+    /// </para>
+    /// <para>
+    /// This runs unelevated on purpose. Setting an app-pool environment variable
+    /// needs administrator rights, which would make the data directory
+    /// configurable only by someone who could not test it. Setting it here means
+    /// the working path is the default and no manual step is needed at all.
+    /// An explicit <c>OPSLOOKUP_DATA_DIR</c> still wins, for a deployment that
+    /// puts it on real storage.
+    /// </para>
+    /// <para>
+    /// If none of the candidates can be created the last resort is the temp
+    /// folder. That is not a good home -- it can be cleaned -- but it is far
+    /// better than the web root, and the alternative is a process that cannot
+    /// write its own diagnostics.
+    /// </para>
+    /// </remarks>
+    private void ApplyDataDirectory()
+    {
+        var existing = Environment.GetEnvironmentVariable("OPSLOOKUP_DATA_DIR");
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            _logger.LogInformation("Data directory from configuration: {DataDir}", existing);
+            EnsureDirectoryUsable(existing);
+            return;
+        }
+
+        var root = _configuration["Python:DataRoot"];
+        var candidates = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            candidates.Add(root);
+        }
+        else
+        {
+            var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+            if (!string.IsNullOrEmpty(programData))
+            {
+                candidates.Add(Path.Combine(programData, "AI.TicketingAssistant", "data"));
+            }
+        }
+
+        candidates.Add(Path.Combine(Path.GetTempPath(), "AI.TicketingAssistant", "data"));
+
+        foreach (var candidate in candidates)
+        {
+            if (!EnsureDirectoryUsable(candidate))
+            {
+                continue;
+            }
+
+            Environment.SetEnvironmentVariable("OPSLOOKUP_DATA_DIR", candidate);
+            _logger.LogInformation("Data directory set to {DataDir}", candidate);
+            return;
+        }
+
+        // Nothing worked. Leave the variable unset so host.py falls back to its
+        // own default, and say so -- this is exactly the kind of thing that is
+        // invisible until someone goes looking for a missing log file.
+        _logger.LogWarning(
+            "No writable data directory; Python will fall back to its own directory. " +
+            "Logs and checkpoints may not be written.");
+    }
+
+    /// <summary>
+    /// Creates <paramref name="path"/> if needed and verifies it can actually be
+    /// written to, returning false rather than throwing.
+    /// </summary>
+    private bool EnsureDirectoryUsable(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+
+            // A directory that exists is not necessarily writable -- the app pool
+            // identity may be able to see it but not create files in it. Probing
+            // with a real file is the only way to know, and doing it here means
+            // the failure names the directory instead of surfacing later as a
+            // SQLite error inside Python.
+            var probe = Path.Combine(path, $".write-probe-{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Data directory {DataDir} is not usable: {Reason}", path, ex.Message);
+            return false;
+        }
     }
 
     private void ImportHost()
@@ -332,23 +494,34 @@ public sealed class PythonBridge : IAsyncDisposable
     }
 
     // ------------------------------------------------------------------ chat
-    public Task<ChatOutcome> ChatAsync(
+    public async Task<ChatOutcome> ChatAsync(
         string ticketId,
         string message,
         string? operatorId,
-        string? locale)
+        string? locale,
+        string apiBaseUrl,
+        string apiToken)
     {
         if (!IsReady)
         {
             throw new InvalidOperationException(StartupError ?? "Python host is not ready");
         }
 
-        // `locale` selects the system prompt so the reply matches the page.
-        // Empty is safe: host.run_turn defaults it rather than failing the turn.
-        return RunAsync(() => ParseOutcome(
+        // The API address and token are handed to Python per turn rather than
+        // read from its .env. That keeps credential acquisition in the host: the
+        // agent receives a short-lived string and has no way to mint another.
+        //
+        // Locale selects the system prompt so the reply matches the page.
+        return await RunAsync(() => ParseOutcome(
             ticketId,
             InvokeString(
-                _runTurn!, ticketId, message, operatorId ?? string.Empty, locale ?? string.Empty)));
+                _runTurn!,
+                ticketId,
+                message,
+                operatorId ?? string.Empty,
+                locale ?? string.Empty,
+                apiBaseUrl,
+                apiToken)));
     }
 
     private static ChatOutcome ParseOutcome(string ticketId, string payload)
