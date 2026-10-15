@@ -119,9 +119,15 @@ public sealed class PythonBridge : IAsyncDisposable
 
     // ------------------------------------------------------------------ discovery
     /// <summary>
-    /// A Windows virtualenv holds no python DLL of its own. pyvenv.cfg points at
-    /// the base installation, and that is where python3XX.dll lives.
+    /// Finds the base Python installation that owns the shared library.
     /// </summary>
+    /// <remarks>
+    /// A Windows virtualenv holds no python DLL of its own -- <c>pyvenv.cfg</c>
+    /// points at the base installation, and that is where <c>python3XX.dll</c>
+    /// lives. A Linux one is laid out differently (<c>bin/</c>, and the shared
+    /// object next to the binary rather than inside the venv), so the two
+    /// layouts are handled separately.
+    /// </remarks>
     private static string ResolveBasePythonDir(string venvDir)
     {
         var config = Path.Combine(venvDir, "pyvenv.cfg");
@@ -142,13 +148,38 @@ public sealed class PythonBridge : IAsyncDisposable
             }
         }
 
-        var venvScripts = Path.Combine(venvDir, "Scripts");
-        if (Directory.Exists(venvScripts))
+        // A venv points at the base install only through pyvenv.cfg. When there
+        // is no venv at all -- which is the container layout, where packages go
+        // into the system interpreter -- treat the configured directory as the
+        // installation itself.
+        if (!Directory.Exists(venvDir))
         {
-            var dll = Directory.EnumerateFiles(venvScripts, "python3*.dll").FirstOrDefault();
-            if (dll is not null)
+            return venvDir;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var venvScripts = Path.Combine(venvDir, "Scripts");
+            if (Directory.Exists(venvScripts))
             {
-                return Path.GetDirectoryName(dll)!;
+                var dll = Directory.EnumerateFiles(venvScripts, "python3*.dll").FirstOrDefault();
+                if (dll is not null)
+                {
+                    return Path.GetDirectoryName(dll)!;
+                }
+            }
+        }
+        else
+        {
+            // bin/python resolves to the real interpreter, and its parent is
+            // the installation root.
+            foreach (var relative in new[] { "bin", "" })
+            {
+                var exe = Path.Combine(venvDir, relative, "python3");
+                if (File.Exists(exe) || (relative == "" && File.Exists(Path.Combine(venvDir, "python3"))))
+                {
+                    return Path.GetFullPath(venvDir);
+                }
             }
         }
 
@@ -156,10 +187,23 @@ public sealed class PythonBridge : IAsyncDisposable
     }
 
     /// <summary>
-    /// pythonnet 3.x will not initialise without an explicit runtime DLL. On
-    /// Windows the versioned one (python314.dll) is in the base install;
-    /// python3.dll is only a small forwarder, so match a digit after "python3".
+    /// Locates the shared library pythonnet needs before it will initialise.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On Windows that is the versioned <c>python3XX.dll</c> in the base
+    /// install. <c>python3.dll</c> is only a small forwarder, so a digit after
+    /// <c>python3</c> is required, and the largest file wins to avoid picking
+    /// the stub.
+    /// </para>
+    /// <para>
+    /// On Linux it is <c>libpython3.X.so</c>, usually versioned
+    /// (<c>libpython3.14.so.1.0</c>) with an unversioned symlink beside it. The
+    /// symlink is what pythonnet dlopen()s, and distributions do not always ship
+    /// it in the development package, so an absolute path from configuration
+    /// remains the override.
+    /// </para>
+    /// </remarks>
     private string ResolveRuntimeDll()
     {
         var configured = _configuration["Python:RuntimeDll"];
@@ -174,27 +218,101 @@ public sealed class PythonBridge : IAsyncDisposable
                 $"Python:RuntimeDll points at {configured}, which does not exist.");
         }
 
-        if (!Directory.Exists(_basePythonDir))
+        // On Windows the DLL sits in the installation root. On Unix it sits in
+        // the lib subdirectory -- /usr/local/bin/python3 with
+        // /usr/local/lib/libpython3.14.so -- so the root alone finds nothing.
+        var searchDirs = OperatingSystem.IsWindows()
+            ? new[] { _basePythonDir }
+            : new[] { _basePythonDir, Path.Combine(_basePythonDir, "lib"), Path.Combine(_basePythonDir, "lib64") }
+                  .Where(Directory.Exists)
+                  .ToArray();
+
+        if (searchDirs.Length == 0)
         {
             throw new DirectoryNotFoundException(
                 $"Python home {_basePythonDir} does not exist. " +
                 "Set Python:Venv or Python:RuntimeDll in configuration.");
         }
 
-        var candidate = Directory
-            .EnumerateFiles(_basePythonDir, "python3*.dll")
-            .Where(path =>
-            {
-                var name = Path.GetFileNameWithoutExtension(path);
-                return name.Length > "python3".Length
-                    && name["python3".Length..].All(char.IsDigit);
-            })
-            .OrderByDescending(path => new FileInfo(path).Length)
+        if (OperatingSystem.IsWindows())
+        {
+            var candidate = searchDirs
+                .SelectMany(dir => Directory.EnumerateFiles(dir, "python3*.dll"))
+                .Where(path =>
+                {
+                    var name = Path.GetFileNameWithoutExtension(path);
+                    return name.Length > "python3".Length
+                        && name["python3".Length..].All(char.IsDigit);
+                })
+                .OrderByDescending(path => new FileInfo(path).Length)
+                .FirstOrDefault();
+
+            return candidate ?? throw new FileNotFoundException(
+                $"No versioned python DLL found in {string.Join(", ", searchDirs)}. " +
+                "Set Python:RuntimeDll in configuration.");
+        }
+
+        // Prefer the unversioned name (libpython3.14.so): that is the stable name
+        // a distribution's python3-config points at, and the one pythonnet should
+        // dlopen. The versioned object behind it is the fallback.
+        //
+        // Keyed by file name because the same library can appear in more than one
+        // search directory, and the first one found is the one dlopen() will
+        // resolve anyway.
+        var shared = searchDirs
+            .SelectMany(dir => Directory.EnumerateFiles(dir, "libpython3*.so*"))
+            .GroupBy(Path.GetFileName)
+            .ToDictionary(g => g.Key!, g => g.First(), StringComparer.Ordinal);
+
+        if (shared.Count == 0)
+        {
+            throw new FileNotFoundException(
+                $"No libpython3*.so found in {string.Join(", ", searchDirs)}. " +
+                "The interpreter must be a shared build -- Debian: libpython3-dev, " +
+                "or set Python:RuntimeDll to the .so directly.");
+        }
+
+        // Two dots or fewer, most-dotted first: libpython3.14.so has two and is
+        // the symlink; libpython3.14.so.1.0 has three and is the object.
+        var unversionedName = shared.Keys
+            .Select(name => (Name: name, Dots: name.Count(c => c == '.')))
+            .Where(x => x.Dots <= 2)
+            .OrderByDescending(x => x.Dots)
+            .Select(x => x.Name)
             .FirstOrDefault();
 
-        return candidate ?? throw new FileNotFoundException(
-            $"No versioned python DLL found in {_basePythonDir}. " +
-            "Set Python:RuntimeDll in configuration.");
+        return unversionedName is not null && shared.TryGetValue(unversionedName, out var unversioned)
+            ? unversioned
+            : shared.Values.OrderByDescending(path => new FileInfo(path).Length).First();
+    }
+
+    /// <summary>
+    /// The site-packages directory for the current operating system. Windows
+    /// puts it at <c>Lib\site-packages</c>; a Unix install nests it under the
+    /// version, as <c>lib/python3.14/site-packages</c>.
+    /// </summary>
+    private string ResolveSitePackages()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return Path.Combine(_venvDir, "Lib", "site-packages");
+        }
+
+        // Take the version from the base directory name when it carries one
+        // (/usr/local/lib/python3.14), otherwise ask the interpreter config.
+        var fromLib = Directory
+            .EnumerateDirectories(Path.Combine(_basePythonDir, "lib"), "python3.*", SearchOption.TopDirectoryOnly)
+            .Where(d => Path.GetFileName(d).All(c => char.IsDigit(c) || c == '.'))
+            .OrderByDescending(d => d)
+            .FirstOrDefault();
+
+        if (fromLib is not null)
+        {
+            return Path.Combine(fromLib, "site-packages");
+        }
+
+        var system = Path.Combine(_basePythonDir, "lib", "python3", "site-packages");
+        return Directory.Exists(system) ? system : Path.Combine(_venvDir, "lib", "python3", "site-packages");
     }
 
     // -------------------------------------------------------------- py marshalling
@@ -311,7 +429,7 @@ public sealed class PythonBridge : IAsyncDisposable
         // in-process, so it inherits this process's environment.
         ApplyDataDirectory();
 
-        var sitePackages = Path.Combine(_venvDir, "Lib", "site-packages");
+        var sitePackages = ResolveSitePackages();
         var runtimeDll = ResolveRuntimeDll();
 
         Runtime.PythonDLL = runtimeDll;
@@ -319,21 +437,32 @@ public sealed class PythonBridge : IAsyncDisposable
 
         // Order matters. The venv's site-packages must win so langgraph resolves
         // from this app's own environment, but the interpreter still needs the
-        // base install's Lib for the standard library -- a virtualenv has no copy
-        // of encodings, and omitting it fails with "Failed to import encodings".
-        PythonEngine.PythonPath = string.Join(
-            Path.PathSeparator,
-            sitePackages,
-            Path.Combine(_basePythonDir, "Lib"),
-            Path.Combine(_basePythonDir, "DLLs"),
-            _basePythonDir,
-            _venvDir);
+        // base install's standard library -- a virtualenv has no copy of
+        // encodings, and omitting it fails with "Failed to import encodings".
+        //
+        // The layout differs by platform: Windows keeps the stdlib in Lib and
+        // the DLLs in DLLs, Unix uses lowercase lib and has no separate DLLs
+        // directory.
+        var searchPath = new List<string> { sitePackages };
+        if (OperatingSystem.IsWindows())
+        {
+            searchPath.Add(Path.Combine(_basePythonDir, "Lib"));
+            searchPath.Add(Path.Combine(_basePythonDir, "DLLs"));
+        }
+        else
+        {
+            searchPath.Add(Path.Combine(_basePythonDir, "lib"));
+            searchPath.Add(_basePythonDir);
+        }
+        searchPath.Add(_venvDir);
+
+        PythonEngine.PythonPath = string.Join(Path.PathSeparator, searchPath);
 
         PythonEngine.Initialize();
 
         _logger.LogInformation(
-            "PythonEngine initialised: dll={Dll} home={Home} sitePackages={SitePackages}",
-            runtimeDll, _basePythonDir, sitePackages);
+            "PythonEngine initialised: dll={Dll} home={Home} sitePackages={SitePackages} os={Os}",
+            runtimeDll, _basePythonDir, sitePackages, Environment.OSVersion.Platform);
     }
 
     /// <summary>
