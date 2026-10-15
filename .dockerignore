@@ -1,0 +1,37 @@
+# Must sit at the ROOT of the build context, not next to the Dockerfile. Docker
+# only reads the one at the context root (or <dockerfile>.dockerignore), and a
+# misplaced copy is silently ignored -- which is how a 654 MB context and a
+# clobbered obj/project.assets.json get through.
+#
+# The context is the repository root so that both images (agent and data API)
+# can be built from it with one set of rules.
+
+**/.git
+**/.vs
+**/bin
+**/obj
+**/node_modules
+**/ClientApp/node_modules
+**/.venv
+**/__pycache__
+**/logs
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-shm
+**/*.sqlite-wal
+**/checkpoints.sqlite*
+
+# .env holds the LongCat key. It must be supplied at run time as an environment
+# variable or a Docker secret, never baked into an image layer -- a layer is
+# readable by anyone who can pull the image, even if a later layer "deletes" it.
+**/.env
+
+# Development settings never reach a runtime image. The csprojs already strip
+# them from publish, and the Dockerfiles set ASPNETCORE_ENVIRONMENT=Production.
+**/appsettings.Development.json
+
+# Not needed to build either image. Excluded to keep the context small.
+src/OpsLookup.Graph/
+docs/
+tools/
+*.md

@@ -1,0 +1,97 @@
+# Ticketing AI Assistant -- data API and the Semantic Kernel agent.
+#
+# The two talk over the compose network, so Lookup__BaseUrl is
+# http://api:8080 rather than 127.0.0.1. Inside the agent's container,
+# 127.0.0.1 is the agent itself -- the mistake that produced "the lookup API is
+# unreachable" while the API was plainly up and healthy on the host.
+#
+# The Python agent (src/OpsLookup.NetCorePythonNetApp) is a separate project with
+# its own Dockerfile and is deliberately not in this file: run one or the other,
+# not both on the same ports.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/OpsLookup.Api/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      # ---------------------------------------------------------------
+      # READ THIS BEFORE TRYING IT. The connection string below only works
+      # against SQL Server configured for mixed authentication.
+      #
+      # The SQL Server Express instance on the development machine reports
+      # IsIntegratedSecurityOnly = 1: Windows authentication only. A container
+      # has no Windows identity for it, so Integrated Security is unavailable,
+      # and a SQL login can be created but can never be used. The API container
+      # starts and reports healthy, then every request to it returns HTTP 500
+      # from the driver -- which looks like an application fault and is not.
+      #
+      # Verified, not assumed: a login created against that instance fails with
+      # "Login failed for user" over TCP.
+      #
+      # To use compose, do one of these:
+      #   1. Switch that instance to mixed mode and restart it. Admin only, and
+      #      it weakens the server's auth posture, so weigh it.
+      #   2. Point at a different SQL Server that already allows SQL logins.
+      #   3. Run SQL Server in a sibling container with SQL auth enabled, and
+      #      replace the Server= below with that service's name.
+      #
+      # The IIS deployment is unaffected: it runs as the app pool identity under
+      # Windows and uses Integrated Security, which this instance does accept.
+      # ---------------------------------------------------------------
+      ConnectionStrings__ContractDb: >-
+        Server=host.docker.internal,1433;Database=OpsLookup;Integrated Security=False;
+        User Id=${MSSQL_LOGIN:-opslookup_docker};Password=${MSSQL_PASSWORD:?set MSSQL_PASSWORD};
+        TrustServerCertificate=True;MultipleActiveResultSets=true
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY, min 32 chars}
+      Jwt__ServiceSecret: ${JWT_SERVICE_SECRET:?set JWT_SERVICE_SECRET}
+    ports:
+      - "8080:8080"
+    # SQL Server usually lives on the host rather than in compose. If it runs in
+    # a sibling container, replace this with that service's name and add it to
+    # depends_on.
+    #
+    # host.docker.internal resolves to the host gateway. Note that the SQL
+    # Express instance listens on ::1 and :: only, so it is not reachable this
+    # way either; the note above covers that too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  agent:
+    build:
+      context: .
+      dockerfile: src/OpsLookup.Agent.SK/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      # Service name, not localhost. See the note at the top.
+      Lookup__BaseUrl: http://api:8080
+      # Must match the API's. The agent exchanges it for a token per turn and
+      # never holds a credential of its own.
+      Jwt__ServiceSecret: ${JWT_SERVICE_SECRET:?set JWT_SERVICE_SECRET}
+      Model__Provider: openai
+      Model__Id: ${MODEL_ID:-longcat-2.5-preview-free}
+      Model__BaseUrl: ${MODEL_BASE_URL:-https://opencode.ai/zen/go/v1}
+      # Never a literal here. An image layer is readable by anyone who can pull
+      # the image, even if a later layer "deletes" the value.
+      Model__ApiKey: ${MODEL_API_KEY:?set MODEL_API_KEY}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    volumes:
+      - agent-history:/var/lib/ticketing
+
+volumes:
+  # Without this, every conversation on every ticket is lost when the container
+  # is replaced.
+  agent-history:

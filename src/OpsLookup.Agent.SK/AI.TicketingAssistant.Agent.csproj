@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OpsLookup.Agent</RootNamespace>
+
+    <!--
+      The OpenAI connector constructors are still marked experimental in SK
+      1.81, and the diagnostic is an error by default. The alternative is a raw
+      Microsoft.Extensions.AI IChatClient, which works, but loses SK's prompt
+      settings plumbing. Revisit when 1.x stabilises them, rather than leaving the
+      warning to be rediscovered on the next upgrade.
+    -->
+    <NoWarn>$(NoWarn);SKEXP0010</NoWarn>
+    <AssemblyName>AI.TicketingAssistant.Agent</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      1.81 is the current stable line. Pinned exactly: a floating version would
+      take whatever ships next into a Production deploy, and SK has moved
+      service registration APIs between minor releases.
+    -->
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.81.0" />
+
+    <!--
+      Replaces LangGraph's SQLite checkpointer. EF Core is not referenced: this
+      is raw ADO.NET against one file, and dragging in the whole ORM for that
+      would be a poor trade.
+    -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!--
+      Set by the Dockerfile, which builds the client in a separate Node stage and
+      copies the result in. Without this the npm step would run inside a Linux
+      SDK image that has no npm, and the publish fails with exit code 127,
+      which reads as "npm is broken" rather than "npm is not installed here".
+    -->
+    <SkipClientBuild Condition="'$(SkipClientBuild)' == ''">false</SkipClientBuild>
+  </PropertyGroup>
+
+  <Target Name="BuildClientApp" BeforeTargets="ComputeFilesToPublish"
+          Condition="'$(SkipClientBuild)' != 'true'
+                     And '$(BuildingInsideVisualStudio)' != 'true'
+                     And Exists('$(MSBuildProjectDirectory)\ClientApp\package.json')">
+    <!--
+      The Vue client, built from ClientApp/src into wwwroot.
+
+      Runs on publish so a deploy cannot ship a binary that serves a stale or
+      missing page. Skipped inside Visual Studio, which runs its own client build.
+
+      Order matters: this must run before ComputeFilesToPublish, or the newly
+      written wwwroot is not in the item list that is about to be copied.
+    -->
+    <Exec Command="npm ci --no-audit --no-fund"
+          WorkingDirectory="$(MSBuildProjectDirectory)\ClientApp"
+          Condition="!Exists('$(MSBuildProjectDirectory)\ClientApp\node_modules')" />
+    <Exec Command="npm run build"
+          WorkingDirectory="$(MSBuildProjectDirectory)\ClientApp" />
+  </Target>
+
+  <ItemGroup>
+    <!--
+      wwwroot is picked up by the SDK Web project's own default globs, so it is
+      published without an explicit Include. Listed here only to make that
+      dependency visible: if this Include is ever removed by accident the page
+      silently stops being served, and nothing fails.
+    -->
+    <Content Update="wwwroot\**" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Development configuration must never reach a runtime image or a
+      Production folder. It carries a placeholder signing key and a localhost
+      connection string, either of which is worse than nothing.
+    -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+</Project>
