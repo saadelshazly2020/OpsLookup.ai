@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using OpsLookup.Api.Entities;
 using OpsLookup.Api.Security;
 
@@ -26,30 +26,30 @@ public static class DevSeeder
 
         // Primary keys are IDENTITY, so they are left to the database. Contracts are
         // referenced by navigation so EF populates ContractId from the generated keys.
-        var maintenance = new Contract { Name = "Annual Maintenance Agreement", Code = 100234, CreatedDate = created };
-        var network = new Contract { Name = "Network Support Retainer", Code = 100235, CreatedDate = created };
-        var audit = new Contract { Name = "Security Audit Services", Code = 100236, CreatedDate = created };
+        var maintenance = new Contract { Name = "عقد العمل الموحد", Code = 100234, CreatedDate = created };
+        var network = new Contract { Name = "عقد المدارس", Code = 100235, CreatedDate = created };
+        var audit = new Contract { Name = "عقد المحامين", Code = 100236, CreatedDate = created };
 
         db.Contracts.AddRange(maintenance, network, audit);
 
         // Attorneys are referenced by navigation from Party, so EF assigns the
         // identity keys and fills the foreign keys.
-        var approvedAttorney = new Attorney { Name = "Lena Fischer", Status = AttorneyStatus.Approved, CreatedDate = created };
-        var fakedAttorney = new Attorney { Name = "Marcus Webb", Status = AttorneyStatus.Faked, CreatedDate = created };
+        var approvedAttorney = new Attorney { Name = "وكالة فردية", Status = AttorneyStatus.Approved, CreatedDate = created };
+        var fakedAttorney = new Attorney { Name = "وكالة إلكترونية", Status = AttorneyStatus.Faked, CreatedDate = created };
 
         db.Attorneys.AddRange(approvedAttorney, fakedAttorney);
 
         db.Parties.AddRange(
-            new Party { Name = "A Nasser", Contract = maintenance, SocialId = 1234567890, CreatedDate = created },
-            new Party { Name = "A Nasser", Contract = network, SocialId = 1234567890, CreatedDate = created },
+            new Party { Name = "أحمد ناصر", Contract = maintenance, SocialId = 1234567890, CreatedDate = created },
+            new Party { Name = "أحمد ناصر", Contract = network, SocialId = 1234567890, CreatedDate = created },
             new Party
             {
-                Name = "B Karimi", Contract = maintenance, SocialId = 1987654321,
+                Name = "محمد إبراهيم", Contract = maintenance, SocialId = 1987654321,
                 Attorney = approvedAttorney, CreatedDate = created,
             },
             new Party
             {
-                Name = "C Delacroix", Contract = audit, SocialId = 2111111111,
+                Name = "ياسين محمد", Contract = audit, SocialId = 2111111111,
                 Attorney = fakedAttorney, CreatedDate = created,
             });
 

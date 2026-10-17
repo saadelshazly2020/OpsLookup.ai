@@ -9,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ------------------------------------------------------------------ services
 var modelId = builder.Configuration["Model:Id"] ?? "longcat-2.5-preview-free";
-var apiKey = builder.Configuration["Model:ApiKey"];
+var apiKey = builder.Configuration["Model:ApiKey"]?? Environment.GetEnvironmentVariable("ApiKey", EnvironmentVariableTarget.User);
 var baseUrl = builder.Configuration["Model:BaseUrl"]
     ?? throw new InvalidOperationException("Model:BaseUrl is not configured.");
 var lookupBase = builder.Configuration["Lookup:BaseUrl"]
@@ -39,6 +39,7 @@ builder.Services.AddSingleton<IChatCompletionService>(_ =>
     var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(120) };
     http.DefaultRequestHeaders.UserAgent.ParseAdd(
         builder.Configuration["Model:UserAgent"] ?? "OpsLookup.Agent/1.0");
+    http.DefaultRequestHeaders.TryAddWithoutValidation("x-opencode-session", sessionId);
 
     if (isZenGateway)
     {

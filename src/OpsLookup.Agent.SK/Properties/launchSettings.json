@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "AI.TicketingAssistant.Agent": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:45243;http://localhost:45244"
+    }
+  }
+}

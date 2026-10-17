@@ -36,19 +36,18 @@
 
       .env.example is not excluded and should ship: it is the blank template.
     -->
-    <Content Include="Python\**"
-             Exclude="Python\.venv\**;Python\logs\**;Python\**\__pycache__\**;Python\checkpoints.sqlite*;Python\smoke_test.py"
-             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Python\**" Exclude="Python\.venv\**;Python\logs\**;Python\**\__pycache__\**;Python\checkpoints.sqlite*;Python\smoke_test.py" CopyToPublishDirectory="PreserveNewest" />
 
-    <Content Include="Python\.venv\**"
-             Condition="'$(IncludePythonVenv)' == 'true'"
-             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Python\.venv\**" Condition="'$(IncludePythonVenv)' == 'true'" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="NewFolder\" />
   </ItemGroup>
 	<Target Name="RemoveDevelopmentSettingsOnPublish" AfterTargets="ComputeFilesToPublish">
 		<ItemGroup>
 			
-			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
-								   Condition="'%(Filename)%(Extension)' == 'appsettings.json'" />
+			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'appsettings.json'" />
 		</ItemGroup>
 	</Target>
 
