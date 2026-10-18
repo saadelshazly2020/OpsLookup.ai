@@ -3,4 +3,5 @@
     <Project Path="src/OpsLookup.Api/AI.TicketingAssistant.Api.csproj" />
     <Project Path="src/OpsLookup.NetCorePythonNetApp/AI.TicketingAssistant.PythonNetApp.csproj" />
   </Folder>
+  <Project Path="src/OpsLookup.Agent.SK/AI.TicketingAssistant.Agent.csproj" />
 </Solution>
