@@ -25,14 +25,21 @@ class GetAttorneyInput(BaseModel):
     social_id: int | None = Field(
         default=None,
         description=(
-            "The party's social ID. Must be exactly "
+            "The party's social ID. Must be exactly - رقم الهوية الوطنية أو الإقامة"
             f"{SOCIAL_ID_RULE}. Omit if you do not have it."
         ),
-    )
-    party_name: str | None = Field(
+    ),
+    attorneyCode: int | None = Field(
         default=None,
         description=(
-            "Partial or full party name, for example 'Karimi'. "
+            "The attorney's code. Must be exactly - رقم الوكالة "
+            " Omit if you do not have it."
+        ),
+    ),
+    cRNumber: str | None = Field(
+        default=None,
+        description=(
+            "national unified Number or Commercial registerNumber - الرقم الوطني الموحد أو رقم السجل التجاري "
             "Omit if you do not have one."
         ),
     )
@@ -41,25 +48,26 @@ class GetAttorneyInput(BaseModel):
 def build_attorney_tools(client: LookupApiClient) -> list[StructuredTool]:
     async def get_attorney(
         social_id: int | None = None,
-        party_name: str | None = None,
+        attorneyCode: int | None = None,
+        cRNumber: str | None = None,
     ) -> str:
-        """Look up the attorney acting for a party, and that attorney's standing.
+        """Look up the attorney - البحث عن وكالة.
 
-        Search by social ID, party name, or both. At least one is required.
+        Search by social ID, attorney code, cRNumber, or any combination. At least one is required  - .
         Returns a JSON array; each item has attorneyId, attorneyName, status,
         partyName and socialId. An empty array means no attorney is on file for
         that party.
         """
-        if social_id is None and not party_name:
+        if social_id is None and attorneyCode is None and cRNumber is None:
             return json.dumps(
                 {
-                    "error": "Provide a social ID, a party name, or both."
+                    "error": "Provide a social ID, an attorney code, or a cRNumber."
                 }
             )
 
         try:
             rows = await client.get_attorneys(
-                social_id=social_id, party_name=party_name
+                social_id=social_id, attorney_code=attorneyCode, cRNumber=cRNumber
             )
         except LookupApiError as exc:
             # Returned as text so the model explains the failure to the member
